@@ -1,10 +1,18 @@
 import { NextResponse } from "next/server";
+import {
+  analysisWindowLabel,
+  currentAnalysisWindowStart,
+  nextAnalysisUnlock,
+} from "@/lib/analysisWindow";
 import { TIERS } from "@/lib/combinations";
 import { getSupabaseServer } from "@/lib/supabase";
 
 export async function GET() {
   try {
     const supabase = getSupabaseServer();
+    const windowStart = currentAnalysisWindowStart();
+    const unlockAt = nextAnalysisUnlock();
+
     const { data: run, error: runError } = await supabase
       .from("runs")
       .select("*")
@@ -14,8 +22,17 @@ export async function GET() {
 
     if (runError) throw runError;
     if (!run) {
-      return NextResponse.json({ run: null });
+      return NextResponse.json({
+        run: null,
+        canRunToday: true,
+        nextUnlockAt: unlockAt.toISOString(),
+        windowLabel: analysisWindowLabel(),
+      });
     }
+
+    const ranInCurrentWindow =
+      new Date(run.created_at).getTime() >= windowStart.getTime();
+    const canRunToday = !ranInCurrentWindow;
 
     const { data: combinations, error: comboError } = await supabase
       .from("combinations")
@@ -86,6 +103,9 @@ export async function GET() {
       matchCount: run.match_count,
       createdAt: run.created_at,
       sports: run.sports,
+      canRunToday,
+      nextUnlockAt: unlockAt.toISOString(),
+      windowLabel: analysisWindowLabel(),
       combinations: ordered,
     });
   } catch (err: any) {

@@ -47,6 +47,9 @@ type LatestRun = {
   matchCount: number;
   createdAt: string;
   combinations: Combination[];
+  canRunToday: boolean;
+  nextUnlockAt?: string;
+  windowLabel?: string;
 };
 
 type PicksPage = {
@@ -163,17 +166,26 @@ export default function Home() {
   const [filterOutcome, setFilterOutcome] = useState("all");
   const [filterFrom, setFilterFrom] = useState("");
   const [filterTo, setFilterTo] = useState("");
+  const [canRunToday, setCanRunToday] = useState(true);
+  const [nextUnlockAt, setNextUnlockAt] = useState<string | null>(null);
+  const [windowLabel, setWindowLabel] = useState("09:00");
 
   const loadLatest = useCallback(async () => {
     const res = await fetch("/api/latest-run");
     const data = await res.json();
     if (!res.ok) throw new Error(data.error ?? "Failed to load latest run.");
+    setCanRunToday(data.canRunToday !== false);
+    setNextUnlockAt(data.nextUnlockAt ?? null);
+    setWindowLabel(data.windowLabel ?? "09:00");
     if (data.runId) {
       setLatest({
         runId: data.runId,
         matchCount: data.matchCount,
         createdAt: data.createdAt,
         combinations: data.combinations ?? [],
+        canRunToday: Boolean(data.canRunToday),
+        nextUnlockAt: data.nextUnlockAt,
+        windowLabel: data.windowLabel,
       });
     } else {
       setLatest(null);
@@ -263,6 +275,16 @@ export default function Home() {
   }, [settleAndRefresh]);
 
   async function runAnalysis() {
+    if (!canRunToday) {
+      setError(
+        `Analysis already ran for today's window. Next run available at ${
+          nextUnlockAt
+            ? new Date(nextUnlockAt).toLocaleString()
+            : windowLabel
+        }.`
+      );
+      return;
+    }
     setLoading(true);
     setError(null);
     setStatus(null);
@@ -279,6 +301,7 @@ export default function Home() {
       await loadList("picks", 1);
     } catch (e: any) {
       setError(e.message);
+      await loadLatest();
     } finally {
       setLoading(false);
     }
@@ -370,10 +393,14 @@ export default function Home() {
         <div className="flex flex-wrap gap-2 mt-2">
           <button
             onClick={runAnalysis}
-            disabled={loading}
+            disabled={loading || !canRunToday}
             className="font-medium px-5 py-2.5 rounded-md bg-accent text-bg hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {loading ? "Running analysis..." : "Run today's analysis"}
+            {loading
+              ? "Running analysis..."
+              : !canRunToday
+                ? "Already ran today"
+                : "Run today's analysis"}
           </button>
           <button
             onClick={settleNow}
@@ -385,9 +412,12 @@ export default function Home() {
         {error && <div className="text-danger text-sm">{error}</div>}
         {status && <div className="text-muted text-sm font-mono">{status}</div>}
         <div className="text-xs text-muted font-mono">
-          Auto-refresh every 5m
+          Auto-refresh every 5m · new analysis unlocks daily at {windowLabel}
           {lastSettleAt
             ? ` · last settle ${new Date(lastSettleAt).toLocaleTimeString()}`
+            : ""}
+          {!canRunToday && nextUnlockAt
+            ? ` · next run ${new Date(nextUnlockAt).toLocaleString()}`
             : ""}
         </div>
       </header>

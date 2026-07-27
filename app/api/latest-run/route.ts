@@ -4,7 +4,7 @@ import {
   currentAnalysisWindowStart,
   nextAnalysisUnlock,
 } from "@/lib/analysisWindow";
-import { TIERS } from "@/lib/combinations";
+import { DISPLAY_TIERS } from "@/lib/combinations";
 import { getSupabaseServer } from "@/lib/supabase";
 
 export async function GET() {
@@ -25,14 +25,14 @@ export async function GET() {
       return NextResponse.json({
         run: null,
         canRunToday: true,
+        ranToday: false,
         nextUnlockAt: unlockAt.toISOString(),
         windowLabel: analysisWindowLabel(),
       });
     }
 
-    const ranInCurrentWindow =
+    const ranToday =
       new Date(run.created_at).getTime() >= windowStart.getTime();
-    const canRunToday = !ranInCurrentWindow;
 
     const { data: combinations, error: comboError } = await supabase
       .from("combinations")
@@ -85,8 +85,8 @@ export async function GET() {
       ])
     );
 
-    // Always surface 2x / 5x / 50x / 100x / 1000x slots
-    const ordered = TIERS.map(({ tier, targetOdds }) => {
+    // Always surface 2x / 5x / 10x / 50x / 100x / 1000x + Draw slots
+    const ordered = DISPLAY_TIERS.map(({ tier, targetOdds }) => {
       const existing = byTier.get(tier);
       if (existing) return existing;
       return {
@@ -103,7 +103,8 @@ export async function GET() {
       matchCount: run.match_count,
       createdAt: run.created_at,
       sports: run.sports,
-      canRunToday,
+      canRunToday: true,
+      ranToday,
       nextUnlockAt: unlockAt.toISOString(),
       windowLabel: analysisWindowLabel(),
       combinations: ordered,

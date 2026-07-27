@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { fetchScores } from "@/lib/oddsApi";
 import { getSupabaseServer } from "@/lib/supabase";
-import { settlePick } from "@/lib/settle";
+import { parseMatchScores, settlePick } from "@/lib/settle";
 
 export const maxDuration = 60;
 
@@ -80,9 +80,16 @@ async function runSettle() {
       continue;
     }
 
+    const parsed = parseMatchScores(scores, pick.home_team, pick.away_team);
+
     const { error: upErr } = await supabase
       .from("matches")
-      .update({ result: result.result, profit: result.profit })
+      .update({
+        result: result.result,
+        profit: result.profit,
+        home_score: parsed?.home ?? null,
+        away_score: parsed?.away ?? null,
+      })
       .eq("id", pick.id);
     if (upErr) throw upErr;
     settled++;

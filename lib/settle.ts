@@ -17,19 +17,30 @@ export type SettleResult = {
   profit: number;
 };
 
+export type ParsedScores = { home: number; away: number };
+
+/** Parse Odds API score rows into home/away numerics for a fixture. */
+export function parseMatchScores(
+  scores: ScoreRow[] | null | undefined,
+  home: string,
+  away: string
+): ParsedScores | null {
+  if (!scores) return null;
+  const homeScore = scores.find((s) => s.name === home);
+  const awayScore = scores.find((s) => s.name === away);
+  if (!homeScore || !awayScore) return null;
+  const homeNum = Number(homeScore.score);
+  const awayNum = Number(awayScore.score);
+  if (Number.isNaN(homeNum) || Number.isNaN(awayNum)) return null;
+  return { home: homeNum, away: awayNum };
+}
+
 function scoresMap(
   scores: ScoreRow[] | null | undefined,
   home: string,
   away: string
 ) {
-  if (!scores) return null;
-  const homeScore = scores.find((s) => s.name === home);
-  const awayScore = scores.find((s) => s.name === away);
-  if (!homeScore || !awayScore) return null;
-  return {
-    home: Number(homeScore.score),
-    away: Number(awayScore.score),
-  };
+  return parseMatchScores(scores, home, away);
 }
 
 function pnl(won: boolean, bestPrice: number): SettleResult {

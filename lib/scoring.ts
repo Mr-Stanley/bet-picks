@@ -115,6 +115,41 @@ export function scoreMatches(matches: NormalizedMatch[]): ScoredPick[] {
   return picks.sort((a, b) => b.confidenceScore - a.confidenceScore);
 }
 
+/** Stable key for one fixture (prefer Odds API event id). */
+export function eventKey(p: {
+  eventId: string;
+  homeTeam: string;
+  awayTeam: string;
+  commenceTime: string;
+}): string {
+  return p.eventId || `${p.homeTeam}__${p.awayTeam}__${p.commenceTime}`;
+}
+
+function isBetterPick(candidate: ScoredPick, current: ScoredPick): boolean {
+  if (candidate.confidenceScore !== current.confidenceScore) {
+    return candidate.confidenceScore > current.confidenceScore;
+  }
+  if (candidate.impliedProb !== current.impliedProb) {
+    return candidate.impliedProb > current.impliedProb;
+  }
+  return candidate.bestPrice < current.bestPrice;
+}
+
+/** One recommended pick per game — highest confidence, then probability, then shorter price. */
+export function pickBestPerEvent(picks: ScoredPick[]): ScoredPick[] {
+  const best = new Map<string, ScoredPick>();
+  for (const pick of picks) {
+    const key = eventKey(pick);
+    const current = best.get(key);
+    if (!current || isBetterPick(pick, current)) {
+      best.set(key, pick);
+    }
+  }
+  return Array.from(best.values()).sort(
+    (a, b) => b.confidenceScore - a.confidenceScore
+  );
+}
+
 export function categorizePicks(picks: ScoredPick[]): CategorizedPicks {
   const buckets: CategorizedPicks = {
     match_winner: [],

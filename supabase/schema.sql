@@ -28,6 +28,8 @@ create table if not exists matches (
   confidence_band text not null,
   result text not null default 'pending', -- pending | won | lost | void
   profit numeric,
+  home_score numeric,
+  away_score numeric,
   raw jsonb,
   created_at timestamptz not null default now()
 );
@@ -48,6 +50,8 @@ create table if not exists combinations (
 alter table matches add column if not exists event_id text;
 alter table matches add column if not exists result text default 'pending';
 alter table matches add column if not exists profit numeric;
+alter table matches add column if not exists home_score numeric;
+alter table matches add column if not exists away_score numeric;
 
 create index if not exists idx_matches_run_id on matches(run_id);
 create index if not exists idx_combinations_run_id on combinations(run_id);

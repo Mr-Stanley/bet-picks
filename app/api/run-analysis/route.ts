@@ -1,15 +1,22 @@
 import { NextResponse } from "next/server";
-import {
-  analysisWindowLabel,
-  currentAnalysisWindowStart,
-  nextAnalysisUnlock,
-} from "@/lib/analysisWindow";
 import { fetchTodaysOdds } from "@/lib/oddsApi";
-import { categorizePicks, scoreMatches } from "@/lib/scoring";
-import { buildCombinations } from "@/lib/combinations";
+import {
+  categorizePicks,
+  pickBestPerEvent,
+  scoreMatches,
+  ScoredPick,
+} from "@/lib/scoring";
+import {
+  buildCombinations,
+  buildDrawCombination,
+} from "@/lib/combinations";
 import { getSupabaseServer } from "@/lib/supabase";
 
 export const maxDuration = 60;
+
+function pickInsertKey(p: ScoredPick): string {
+  return `${p.homeTeam}__${p.awayTeam}__${p.commenceTime}__${p.selection}`;
+}
 
 export async function POST() {
   try {
@@ -22,37 +29,27 @@ export async function POST() {
     }
 
     const supabase = getSupabaseServer();
-    const windowStart = currentAnalysisWindowStart();
-    const unlockAt = nextAnalysisUnlock();
-
-    // One analysis per day-window starting at 09:00 local (ANALYSIS_TZ).
-    const { data: todaysRun, error: todaysError } = await supabase
-      .from("runs")
-      .select("id, created_at")
-      .gte("created_at", windowStart.toISOString())
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (todaysError) throw todaysError;
-
-    if (todaysRun) {
-      return NextResponse.json(
-        {
-          error: `Analysis already ran for today's window (opens daily at ${analysisWindowLabel()}). Next run available ${unlockAt.toLocaleString()}.`,
-          runId: todaysRun.id,
-          ranAt: todaysRun.created_at,
-          canRunToday: false,
-          nextUnlockAt: unlockAt.toISOString(),
-          windowStart: windowStart.toISOString(),
-        },
-        { status: 429 }
-      );
-    }
 
     const matches = await fetchTodaysOdds(apiKey);
-    const picks = scoreMatches(matches);
-    const categorized = categorizePicks(picks);
-    const combinations = buildCombinations(picks);
+    const scored = scoreMatches(matches);
+    const bestPicks = pickBestPerEvent(scored);
+    const categorized = categorizePicks(bestPicks);
+    const mainCombos = buildCombinations(bestPicks);
+    const drawCombo = buildDrawCombination(scored);
+    const combinations = [...mainCombos, drawCombo];
+
+    // Persist one pick per game, plus any draw-combo legs not already selected.
+    const toInsert: ScoredPick[] = [...bestPicks];
+    const insertedKeys = new Set(bestPicks.map(pickInsertKey));
+    if (drawCombo) {
+      for (const leg of drawCombo.legs) {
+        const key = pickInsertKey(leg);
+        if (!insertedKeys.has(key)) {
+          toInsert.push(leg);
+          insertedKeys.add(key);
+        }
+      }
+    }
 
     // Active picks belong to the current run only — clear previous pending
     // rows so they don't mix with the new slip. Settled results are kept.
@@ -74,9 +71,9 @@ export async function POST() {
 
     if (runError) throw runError;
 
-    if (picks.length > 0) {
+    if (toInsert.length > 0) {
       const { error: matchesError } = await supabase.from("matches").insert(
-        picks.map((p) => ({
+        toInsert.map((p) => ({
           run_id: run.id,
           event_id: p.eventId,
           sport: p.sport,
@@ -141,10 +138,12 @@ export async function POST() {
     return NextResponse.json({
       runId: run.id,
       matchCount: matches.length,
-      pickCount: picks.length,
-      picks,
+      pickCount: bestPicks.length,
+      leagueCount: new Set(matches.map((m) => m.sport)).size,
+      picks: bestPicks,
       categorized,
       combinations,
+      canRunToday: true,
     });
   } catch (err: any) {
     console.error(err);

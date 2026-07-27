@@ -5,9 +5,10 @@
 // rather than deep statistical modelling -- see the README for how to extend
 // this with a stats provider if you want richer signals.
 //
-// Featured markets (h2h / spreads / totals) come from the bulk /odds endpoint.
-// Cards, quarter, and set markets require the per-event endpoint and are
-// fetched for a small capped sample so a free-tier key isn't burned in one run.
+// Featured markets (h2h / spreads / totals) come from the bulk /odds endpoint
+// for every active Soccer / Basketball / Tennis league. Cards, quarter, and
+// set markets require the per-event endpoint and are fetched for a small
+// capped sample so a free-tier key isn't burned in one run.
 
 const BASE_URL = "https://api.the-odds-api.com/v4";
 
@@ -48,7 +49,7 @@ type SportEntry = {
 
 const TARGET_GROUPS = ["Soccer", "Basketball", "Tennis"] as const;
 
-const MAX_SPORTS_PER_RUN = 6;
+const ODDS_FETCH_CONCURRENCY = 8;
 const MAX_EXTRA_EVENTS_PER_GROUP = 2;
 
 const FEATURED_MARKETS = "h2h,spreads,totals";
@@ -244,28 +245,26 @@ function mergeOutcomes(
   return Array.from(map.values());
 }
 
-/** Fetches odds across football/basketball/tennis for matches starting in the next 24h. */
+async function mapInBatches<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = [];
+  for (let i = 0; i < items.length; i += concurrency) {
+    const batch = items.slice(i, i + concurrency);
+    const batchResults = await Promise.all(batch.map(fn));
+    results.push(...batchResults);
+  }
+  return results;
+}
+
+/** Fetches odds across all active football/basketball/tennis leagues (next 24h). */
 export async function fetchTodaysOdds(apiKey: string): Promise<NormalizedMatch[]> {
   const sports = await fetchActiveSports(apiKey);
-  const byGroup = new Map<string, SportEntry[]>();
-  for (const s of sports) {
-    const list = byGroup.get(s.group) ?? [];
-    list.push(s);
-    byGroup.set(s.group, list);
-  }
-  const chosen: SportEntry[] = [];
-  const perGroup = Math.max(1, Math.floor(MAX_SPORTS_PER_RUN / TARGET_GROUPS.length));
-  for (const group of TARGET_GROUPS) {
-    const list = byGroup.get(group) ?? [];
-    chosen.push(...list.slice(0, perGroup));
-  }
-  for (const s of sports) {
-    if (chosen.length >= MAX_SPORTS_PER_RUN) break;
-    if (!chosen.includes(s)) chosen.push(s);
-  }
 
-  const results = await Promise.all(
-    chosen.map((s) => fetchOddsForSport(apiKey, s.key, s.group))
+  const results = await mapInBatches(sports, ODDS_FETCH_CONCURRENCY, (s) =>
+    fetchOddsForSport(apiKey, s.key, s.group)
   );
 
   const now = Date.now();

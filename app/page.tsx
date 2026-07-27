@@ -20,6 +20,8 @@ type PickItem = {
   confidenceBand: ConfidenceBand;
   result: "pending" | "won" | "lost" | "void";
   profit: number | null;
+  homeScore: number | null;
+  awayScore: number | null;
 };
 
 type ComboLeg = {
@@ -48,6 +50,7 @@ type LatestRun = {
   createdAt: string;
   combinations: Combination[];
   canRunToday: boolean;
+  ranToday?: boolean;
   nextUnlockAt?: string;
   windowLabel?: string;
 };
@@ -80,6 +83,13 @@ function formatKickoff(iso: string) {
   });
 }
 
+function formatScore(home: number | null, away: number | null): string {
+  if (home === null || away === null || Number.isNaN(home) || Number.isNaN(away)) {
+    return "—";
+  }
+  return `${home}–${away}`;
+}
+
 function ProbabilityGauge({ probability }: { probability: number }) {
   const pct = Math.max(probability * 100, 0.5);
   return (
@@ -92,63 +102,178 @@ function ProbabilityGauge({ probability }: { probability: number }) {
   );
 }
 
+function ConfidenceBar({
+  score,
+  band,
+}: {
+  score: number;
+  band: ConfidenceBand;
+}) {
+  const fill =
+    band === "high" ? "bg-accent" : band === "medium" ? "bg-warn" : "bg-danger";
+  return (
+    <div className="flex items-center gap-2 min-w-[5.5rem]">
+      <div className="h-1 flex-1 rounded-full bg-surfaceRaised overflow-hidden">
+        <div
+          className={`h-full rounded-full ${fill}`}
+          style={{ width: `${Math.min(Math.max(score, 0), 100)}%` }}
+        />
+      </div>
+      <span className={`font-mono text-[11px] tabular-nums ${bandColor[band]}`}>
+        {score}
+      </span>
+    </div>
+  );
+}
+
 function resultBadge(result: PickItem["result"]) {
-  if (result === "won") return "text-accent";
-  if (result === "lost") return "text-danger";
-  if (result === "void") return "text-muted";
-  return "text-muted";
+  if (result === "won") return "text-accent bg-accent/10";
+  if (result === "lost") return "text-danger bg-danger/10";
+  if (result === "void") return "text-muted bg-surfaceRaised";
+  return "text-muted bg-surfaceRaised";
+}
+
+function tierLabel(tier: string): string {
+  if (tier === "draw") return "Draw accumulator";
+  return `Target ${tier}`;
 }
 
 function ComboCard({ combo }: { combo: Combination }) {
   return (
-    <div className="rounded-lg border border-border bg-surface p-5 flex flex-col gap-4">
-      <div className="flex items-baseline justify-between">
+    <div className="combo-card rounded-xl border border-border bg-surface/80 backdrop-blur-sm p-4 sm:p-5 flex flex-col gap-4">
+      <div className="flex items-baseline justify-between gap-3">
         <div>
-          <div className="text-xs uppercase tracking-wide text-muted">
-            Target {combo.tier}
+          <div className="text-[11px] uppercase tracking-wide text-muted">
+            {tierLabel(combo.tier)}
           </div>
-          <div className="font-display text-2xl font-bold">
+          <div className="font-display text-2xl font-bold tabular-nums">
             {combo.combinedOdds.toFixed(2)}x
           </div>
         </div>
         <div className="text-right">
-          <div className="text-xs uppercase tracking-wide text-muted">
-            Implied probability
+          <div className="text-[11px] uppercase tracking-wide text-muted">
+            Implied
           </div>
-          <div className="font-mono text-lg">
+          <div className="font-mono text-base sm:text-lg tabular-nums">
             {(combo.impliedProbability * 100).toFixed(2)}%
           </div>
         </div>
       </div>
       <ProbabilityGauge probability={combo.impliedProbability} />
       <div className="text-xs text-muted">
-        {combo.legs.length} leg{combo.legs.length !== 1 ? "s" : ""} - every leg
+        {combo.legs.length} leg{combo.legs.length !== 1 ? "s" : ""} — every leg
         must win
       </div>
       <div className="flex flex-col gap-2">
         {combo.legs.map((leg, i) => (
           <div
             key={i}
-            className="flex items-center justify-between rounded-md bg-surfaceRaised px-3 py-2 text-sm"
+            className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between rounded-lg bg-surfaceRaised/80 px-3 py-2.5 text-sm"
           >
-            <div className="flex flex-col">
-              <span className="font-medium">
+            <div className="flex flex-col min-w-0">
+              <span className="font-medium truncate">
                 {leg.homeTeam} vs {leg.awayTeam}
               </span>
               <span className="text-muted text-xs">
                 {leg.league} · {formatKickoff(leg.commenceTime)}
               </span>
             </div>
-            <div className="flex flex-col items-end">
-              <span className="font-mono">{leg.selection}</span>
-              <span className={`text-xs font-mono ${bandColor[leg.confidenceBand]}`}>
-                {leg.bestPrice.toFixed(2)} - {leg.confidenceScore}/100
+            <div className="flex items-center justify-between sm:flex-col sm:items-end gap-2 sm:gap-0.5 shrink-0">
+              <span className="font-mono text-sm">{leg.selection}</span>
+              <span
+                className={`text-xs font-mono ${bandColor[leg.confidenceBand]}`}
+              >
+                {leg.bestPrice.toFixed(2)} · {leg.confidenceScore}/100
               </span>
             </div>
           </div>
         ))}
       </div>
     </div>
+  );
+}
+
+function PickRow({
+  pick,
+  tab,
+}: {
+  pick: PickItem;
+  tab: "picks" | "results";
+}) {
+  const scoreLabel = formatScore(pick.homeScore, pick.awayScore);
+
+  return (
+    <article className="flex flex-col gap-3 px-4 py-4 sm:px-5 bg-surface/60 hover:bg-surface transition-colors">
+      <div className="flex flex-col gap-1 min-w-0">
+        <div className="flex items-start justify-between gap-3">
+          <h3 className="font-medium text-sm sm:text-base leading-snug">
+            {pick.homeTeam}{" "}
+            <span className="text-muted font-normal">vs</span> {pick.awayTeam}
+          </h3>
+          {tab === "results" && (
+            <div className="flex items-center gap-2 shrink-0">
+              <span className="font-mono text-sm tabular-nums text-text">
+                {scoreLabel}
+              </span>
+              <span
+                className={`font-mono text-[11px] uppercase tracking-wide px-2 py-0.5 rounded-md ${resultBadge(pick.result)}`}
+              >
+                {pick.result}
+              </span>
+            </div>
+          )}
+        </div>
+        <p className="text-muted text-xs leading-relaxed">
+          <span className="uppercase tracking-wide">{pick.sport}</span>
+          {pick.league ? ` · ${pick.league}` : ""} ·{" "}
+          {formatKickoff(pick.commenceTime)} · {pick.marketLabel}
+        </p>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-[11px] uppercase tracking-wide text-muted">
+            Pick
+          </span>
+          <span className="font-mono truncate">{pick.selection}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] uppercase tracking-wide text-muted">
+            Odds
+          </span>
+          <span className="font-mono tabular-nums">
+            {pick.bestPrice.toFixed(2)}
+          </span>
+        </div>
+        {tab === "results" ? (
+          <div className="flex items-center gap-2 ml-auto">
+            <span className="text-[11px] uppercase tracking-wide text-muted">
+              P/L
+            </span>
+            <span
+              className={`font-mono text-xs tabular-nums ${
+                pick.profit === null
+                  ? "text-muted"
+                  : pick.profit >= 0
+                    ? "text-accent"
+                    : "text-danger"
+              }`}
+            >
+              {pick.profit === null
+                ? "—"
+                : `${pick.profit >= 0 ? "+" : ""}${pick.profit.toFixed(2)}`}
+            </span>
+          </div>
+        ) : (
+          <div className="ml-auto">
+            <ConfidenceBar
+              score={pick.confidenceScore}
+              band={pick.confidenceBand}
+            />
+          </div>
+        )}
+      </div>
+    </article>
   );
 }
 
@@ -166,24 +291,21 @@ export default function Home() {
   const [filterOutcome, setFilterOutcome] = useState("all");
   const [filterFrom, setFilterFrom] = useState("");
   const [filterTo, setFilterTo] = useState("");
-  const [canRunToday, setCanRunToday] = useState(true);
-  const [nextUnlockAt, setNextUnlockAt] = useState<string | null>(null);
-  const [windowLabel, setWindowLabel] = useState("09:00");
+  const [ranToday, setRanToday] = useState(false);
 
   const loadLatest = useCallback(async () => {
     const res = await fetch("/api/latest-run");
     const data = await res.json();
     if (!res.ok) throw new Error(data.error ?? "Failed to load latest run.");
-    setCanRunToday(data.canRunToday !== false);
-    setNextUnlockAt(data.nextUnlockAt ?? null);
-    setWindowLabel(data.windowLabel ?? "09:00");
+    setRanToday(Boolean(data.ranToday));
     if (data.runId) {
       setLatest({
         runId: data.runId,
         matchCount: data.matchCount,
         createdAt: data.createdAt,
         combinations: data.combinations ?? [],
-        canRunToday: Boolean(data.canRunToday),
+        canRunToday: true,
+        ranToday: Boolean(data.ranToday),
         nextUnlockAt: data.nextUnlockAt,
         windowLabel: data.windowLabel,
       });
@@ -275,16 +397,6 @@ export default function Home() {
   }, [settleAndRefresh]);
 
   async function runAnalysis() {
-    if (!canRunToday) {
-      setError(
-        `Analysis already ran for today's window. Next run available at ${
-          nextUnlockAt
-            ? new Date(nextUnlockAt).toLocaleString()
-            : windowLabel
-        }.`
-      );
-      return;
-    }
     setLoading(true);
     setError(null);
     setStatus(null);
@@ -292,8 +404,12 @@ export default function Home() {
       const res = await fetch("/api/run-analysis", { method: "POST" });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Run failed.");
+      const leagues =
+        typeof data.leagueCount === "number"
+          ? ` across ${data.leagueCount} leagues`
+          : "";
       setStatus(
-        `Run complete — ${data.pickCount} picks from ${data.matchCount} matches.`
+        `Run complete — ${data.pickCount} picks from ${data.matchCount} matches${leagues}.`
       );
       setTab("picks");
       setPage(1);
@@ -368,283 +484,273 @@ export default function Home() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Settle failed.");
       setLastSettleAt(data.settledAt ?? new Date().toISOString());
-      setStatus(
-        `Settled ${data.settled} (skipped ${data.skipped ?? 0}).`
-      );
+      setStatus(`Settled ${data.settled} (skipped ${data.skipped ?? 0}).`);
       await loadList(tab, page);
     } catch (e: any) {
       setStatus(e.message);
     }
   }
 
+  const filterInputClass =
+    "w-full bg-surfaceRaised border border-border rounded-lg px-3 py-2.5 text-sm min-h-[44px] focus:outline-none focus:border-accent/60";
+
   return (
-    <main className="max-w-5xl mx-auto px-6 py-12 flex flex-col gap-10">
-      <header className="flex flex-col gap-3">
-        <span className="text-xs uppercase tracking-widest text-muted font-mono">
-          Football - Basketball - Tennis
-        </span>
-        <h1 className="font-display text-4xl font-bold">Daily Picks</h1>
-        <p className="text-muted max-w-2xl text-sm leading-relaxed">
-          Pulls today&apos;s odds, scores by bookmaker consensus, and builds
-          combo slips. Active picks stay until you re-run analysis (settled
-          games move to Results). Filter Results by sport, league, outcome, and
-          date to look back.
-        </p>
-        <div className="flex flex-wrap gap-2 mt-2">
-          <button
-            onClick={runAnalysis}
-            disabled={loading || !canRunToday}
-            className="font-medium px-5 py-2.5 rounded-md bg-accent text-bg hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {loading
-              ? "Running analysis..."
-              : !canRunToday
-                ? "Already ran today"
-                : "Run today's analysis"}
-          </button>
-          <button
-            onClick={settleNow}
-            className="px-4 py-2.5 rounded-md border border-border text-sm text-muted hover:text-text hover:border-accent"
-          >
-            Settle now
-          </button>
-        </div>
-        {error && <div className="text-danger text-sm">{error}</div>}
-        {status && <div className="text-muted text-sm font-mono">{status}</div>}
-        <div className="text-xs text-muted font-mono">
-          Auto-refresh every 5m · new analysis unlocks daily at {windowLabel}
-          {lastSettleAt
-            ? ` · last settle ${new Date(lastSettleAt).toLocaleTimeString()}`
-            : ""}
-          {!canRunToday && nextUnlockAt
-            ? ` · next run ${new Date(nextUnlockAt).toLocaleString()}`
-            : ""}
-        </div>
-      </header>
-
-      {latest && (
-        <>
-          <div className="text-sm text-muted font-mono">
-            Latest run {latest.runId.slice(0, 8)} · {latest.matchCount} matches ·{" "}
-            {new Date(latest.createdAt).toLocaleString()}
-          </div>
-
-          <section className="flex flex-col gap-5">
-            <h2 className="font-display text-xl font-bold">
-              Combo tiers (2x · 5x · 50x · 100x · 1000x)
-            </h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-              {latest.combinations.map((combo) =>
-                combo.legs.length > 0 ? (
-                  <ComboCard key={combo.tier} combo={combo} />
-                ) : (
-                  <div
-                    key={combo.tier}
-                    className="rounded-lg border border-dashed border-border p-5 text-sm text-muted"
-                  >
-                    <div className="font-display text-lg font-bold text-text mb-1">
-                      Target {combo.tier}
-                    </div>
-                    Not enough high-confidence legs today to honestly reach this
-                    tier.
-                  </div>
-                )
-              )}
-            </div>
-          </section>
-        </>
-      )}
-
-      <section className="flex flex-col gap-4">
-        <div className="flex gap-2 border-b border-border">
-          <button
-            type="button"
-            onClick={() => switchTab("picks")}
-            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${
-              tab === "picks"
-                ? "border-accent text-text"
-                : "border-transparent text-muted hover:text-text"
-            }`}
-          >
-            Picks
-          </button>
-          <button
-            type="button"
-            onClick={() => switchTab("results")}
-            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${
-              tab === "results"
-                ? "border-accent text-text"
-                : "border-transparent text-muted hover:text-text"
-            }`}
-          >
-            Results
-          </button>
-        </div>
-
-        {tab === "picks" && latest && (
-          <p className="text-xs text-muted">
-            Showing pending picks from the latest run — they remain until the
-            next analysis (finished ones move to Results).
+    <main className="relative min-h-screen">
+      <div className="page-glow pointer-events-none absolute inset-x-0 top-0 h-[28rem]" />
+      <div className="relative max-w-5xl mx-auto px-4 sm:px-6 py-8 sm:py-12 flex flex-col gap-8 sm:gap-10">
+        <header className="hero-enter flex flex-col gap-4">
+          <span className="text-[11px] uppercase tracking-[0.2em] text-muted font-mono">
+            Football · Basketball · Tennis
+          </span>
+          <h1 className="font-display text-3xl sm:text-4xl md:text-5xl font-bold tracking-tight">
+            Daily Picks
+          </h1>
+          <p className="text-muted max-w-2xl text-sm sm:text-[15px] leading-relaxed">
+            Scans all in-season football, basketball, and tennis leagues from the
+            odds feed (including women, youth, and international when available).
+            One recommended pick per game, plus combo slips (2x–1000x and a draw
+            accumulator). Rescan anytime; settled games move to Results with
+            scores.
           </p>
-        )}
 
-        {tab === "results" && (
-          <div className="flex flex-wrap gap-3 items-end text-sm">
-            <label className="flex flex-col gap-1">
-              <span className="text-xs text-muted">Outcome</span>
-              <select
-                className="bg-surface border border-border rounded px-2 py-1.5"
-                value={filterOutcome}
-                onChange={(e) => setFilterOutcome(e.target.value)}
+          <div className="sticky top-0 z-20 -mx-4 sm:mx-0 px-4 sm:px-0 py-3 sm:py-0 sm:static bg-bg/85 sm:bg-transparent backdrop-blur-md sm:backdrop-blur-none border-b border-border/60 sm:border-0">
+            <div className="flex flex-col sm:flex-row gap-2 sm:gap-3">
+              <button
+                onClick={runAnalysis}
+                disabled={loading}
+                className="w-full sm:w-auto font-medium px-5 py-3 sm:py-2.5 rounded-lg bg-accent text-bg hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed min-h-[44px]"
               >
-                <option value="all">All</option>
-                <option value="won">Won</option>
-                <option value="lost">Lost</option>
-                <option value="void">Void</option>
-              </select>
-            </label>
-            <label className="flex flex-col gap-1">
-              <span className="text-xs text-muted">Sport</span>
-              <select
-                className="bg-surface border border-border rounded px-2 py-1.5"
-                value={filterSport}
-                onChange={(e) => setFilterSport(e.target.value)}
+                {loading
+                  ? "Scanning all leagues..."
+                  : ranToday
+                    ? "Rescan today"
+                    : "Run today's analysis"}
+              </button>
+              <button
+                onClick={settleNow}
+                className="w-full sm:w-auto px-4 py-3 sm:py-2.5 rounded-lg border border-border text-sm text-muted hover:text-text hover:border-accent transition-colors min-h-[44px]"
               >
-                <option value="all">All</option>
-                {(list?.filters?.sports ?? []).map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="flex flex-col gap-1">
-              <span className="text-xs text-muted">League</span>
-              <select
-                className="bg-surface border border-border rounded px-2 py-1.5 max-w-[12rem]"
-                value={filterLeague}
-                onChange={(e) => setFilterLeague(e.target.value)}
-              >
-                <option value="all">All</option>
-                {(list?.filters?.leagues ?? []).map((l) => (
-                  <option key={l} value={l}>
-                    {l}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="flex flex-col gap-1">
-              <span className="text-xs text-muted">From</span>
-              <input
-                type="date"
-                className="bg-surface border border-border rounded px-2 py-1.5"
-                value={filterFrom}
-                onChange={(e) => setFilterFrom(e.target.value)}
-              />
-            </label>
-            <label className="flex flex-col gap-1">
-              <span className="text-xs text-muted">To</span>
-              <input
-                type="date"
-                className="bg-surface border border-border rounded px-2 py-1.5"
-                value={filterTo}
-                onChange={(e) => setFilterTo(e.target.value)}
-              />
-            </label>
-            <button
-              type="button"
-              onClick={applyResultFilters}
-              className="px-3 py-1.5 rounded-md bg-accent text-bg text-sm font-medium"
-            >
-              Apply
-            </button>
-            <button
-              type="button"
-              onClick={clearResultFilters}
-              className="px-3 py-1.5 rounded-md border border-border text-muted text-sm hover:text-text"
-            >
-              Clear
-            </button>
-          </div>
-        )}
-
-        <div className="flex flex-col divide-y divide-border rounded-lg border border-border overflow-hidden">
-          {!list || list.items.length === 0 ? (
-            <div className="px-4 py-8 text-sm text-muted">
-              {tab === "picks"
-                ? "No pending picks. Run today's analysis to populate."
-                : "No settled results yet. They appear after games finish and settle."}
+                Settle now
+              </button>
             </div>
-          ) : (
-            list.items.map((p) => (
-              <div
-                key={p.id}
-                className="flex items-center justify-between px-4 py-3 bg-surface text-sm gap-4"
-              >
-                <div className="flex flex-col gap-0.5 min-w-0">
-                  <span className="font-medium truncate">
-                    {p.homeTeam} vs {p.awayTeam}
-                  </span>
-                  <span className="text-muted text-xs">
-                    {p.league} · {formatKickoff(p.commenceTime)} ·{" "}
-                    {p.marketLabel}
-                  </span>
-                </div>
-                <div className="flex items-center gap-3 shrink-0">
-                  <span className="font-mono text-right">{p.selection}</span>
-                  <span className="font-mono w-12 text-right">
-                    {p.bestPrice.toFixed(2)}
-                  </span>
-                  {tab === "results" ? (
-                    <>
-                      <span
-                        className={`font-mono text-xs uppercase ${resultBadge(p.result)}`}
-                      >
-                        {p.result}
-                      </span>
-                      <span className="font-mono text-xs w-14 text-right">
-                        {p.profit === null
-                          ? "—"
-                          : `${p.profit >= 0 ? "+" : ""}${p.profit.toFixed(2)}`}
-                      </span>
-                    </>
-                  ) : (
-                    <span
-                      className={`font-mono text-xs px-2 py-1 rounded ${bandColor[p.confidenceBand]} bg-surfaceRaised`}
-                    >
-                      {p.confidenceScore}/100
-                    </span>
-                  )}
-                </div>
-              </div>
-            ))
-          )}
-        </div>
+          </div>
 
-        {list && list.totalPages > 1 && (
-          <div className="flex items-center justify-between text-sm">
+          {error && (
+            <div className="text-danger text-sm rounded-lg border border-danger/30 bg-danger/5 px-3 py-2">
+              {error}
+            </div>
+          )}
+          {status && (
+            <div className="text-muted text-sm font-mono">{status}</div>
+          )}
+          <div className="text-xs text-muted font-mono leading-relaxed">
+            Auto-refresh every 5m · full league scan on each run
+            {lastSettleAt
+              ? ` · last settle ${new Date(lastSettleAt).toLocaleTimeString()}`
+              : ""}
+          </div>
+        </header>
+
+        {latest && (
+          <>
+            <div className="text-xs sm:text-sm text-muted font-mono">
+              Latest run {latest.runId.slice(0, 8)} · {latest.matchCount} matches
+              · {new Date(latest.createdAt).toLocaleString()}
+            </div>
+
+            <section className="flex flex-col gap-4 sm:gap-5">
+              <h2 className="font-display text-lg sm:text-xl font-bold">
+                Combo tiers
+                <span className="block sm:inline font-body text-sm font-normal text-muted sm:ml-2">
+                  2x · 5x · 10x · 50x · 100x · 1000x · Draw
+                </span>
+              </h2>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-5">
+                {latest.combinations.map((combo) =>
+                  combo.legs.length > 0 ? (
+                    <ComboCard key={combo.tier} combo={combo} />
+                  ) : (
+                    <div
+                      key={combo.tier}
+                      className="combo-card rounded-xl border border-dashed border-border/80 p-4 sm:p-5 text-sm text-muted bg-surface/30"
+                    >
+                      <div className="font-display text-lg font-bold text-text mb-1">
+                        {tierLabel(combo.tier)}
+                      </div>
+                      Not enough high-confidence legs today to honestly reach
+                      this tier.
+                    </div>
+                  )
+                )}
+              </div>
+            </section>
+          </>
+        )}
+
+        <section className="flex flex-col gap-4">
+          <div className="flex gap-1 p-1 rounded-xl bg-surfaceRaised/50 border border-border w-full sm:w-fit">
             <button
               type="button"
-              disabled={page <= 1}
-              onClick={() => goPage(page - 1)}
-              className="px-3 py-1.5 rounded border border-border text-muted hover:text-text disabled:opacity-40"
+              onClick={() => switchTab("picks")}
+              className={`flex-1 sm:flex-none px-4 py-2.5 text-sm font-medium rounded-lg min-h-[44px] transition-colors ${
+                tab === "picks"
+                  ? "bg-surface text-text shadow-sm"
+                  : "text-muted hover:text-text"
+              }`}
             >
-              Prev
+              Picks
             </button>
-            <span className="font-mono text-muted">
-              Page {list.page} of {list.totalPages} · {list.total} total
-            </span>
             <button
               type="button"
-              disabled={page >= list.totalPages}
-              onClick={() => goPage(page + 1)}
-              className="px-3 py-1.5 rounded border border-border text-muted hover:text-text disabled:opacity-40"
+              onClick={() => switchTab("results")}
+              className={`flex-1 sm:flex-none px-4 py-2.5 text-sm font-medium rounded-lg min-h-[44px] transition-colors ${
+                tab === "results"
+                  ? "bg-surface text-text shadow-sm"
+                  : "text-muted hover:text-text"
+              }`}
             >
-              Next
+              Results
             </button>
           </div>
-        )}
-      </section>
+
+          {tab === "picks" && latest && (
+            <p className="text-xs text-muted leading-relaxed">
+              Pending picks from the latest run — they remain until the next
+              analysis (finished ones move to Results with scores).
+            </p>
+          )}
+
+          {tab === "results" && (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 text-sm">
+              <label className="flex flex-col gap-1.5 col-span-1">
+                <span className="text-[11px] uppercase tracking-wide text-muted">
+                  Outcome
+                </span>
+                <select
+                  className={filterInputClass}
+                  value={filterOutcome}
+                  onChange={(e) => setFilterOutcome(e.target.value)}
+                >
+                  <option value="all">All</option>
+                  <option value="won">Won</option>
+                  <option value="lost">Lost</option>
+                  <option value="void">Void</option>
+                </select>
+              </label>
+              <label className="flex flex-col gap-1.5">
+                <span className="text-[11px] uppercase tracking-wide text-muted">
+                  Sport
+                </span>
+                <select
+                  className={filterInputClass}
+                  value={filterSport}
+                  onChange={(e) => setFilterSport(e.target.value)}
+                >
+                  <option value="all">All</option>
+                  {(list?.filters?.sports ?? []).map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex flex-col gap-1.5 col-span-2 sm:col-span-1">
+                <span className="text-[11px] uppercase tracking-wide text-muted">
+                  League
+                </span>
+                <select
+                  className={filterInputClass}
+                  value={filterLeague}
+                  onChange={(e) => setFilterLeague(e.target.value)}
+                >
+                  <option value="all">All</option>
+                  {(list?.filters?.leagues ?? []).map((l) => (
+                    <option key={l} value={l}>
+                      {l}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex flex-col gap-1.5">
+                <span className="text-[11px] uppercase tracking-wide text-muted">
+                  From
+                </span>
+                <input
+                  type="date"
+                  className={filterInputClass}
+                  value={filterFrom}
+                  onChange={(e) => setFilterFrom(e.target.value)}
+                />
+              </label>
+              <label className="flex flex-col gap-1.5">
+                <span className="text-[11px] uppercase tracking-wide text-muted">
+                  To
+                </span>
+                <input
+                  type="date"
+                  className={filterInputClass}
+                  value={filterTo}
+                  onChange={(e) => setFilterTo(e.target.value)}
+                />
+              </label>
+              <div className="col-span-2 sm:col-span-3 lg:col-span-1 flex gap-2 items-end">
+                <button
+                  type="button"
+                  onClick={applyResultFilters}
+                  className="flex-1 px-3 py-2.5 rounded-lg bg-accent text-bg text-sm font-medium min-h-[44px]"
+                >
+                  Apply
+                </button>
+                <button
+                  type="button"
+                  onClick={clearResultFilters}
+                  className="flex-1 px-3 py-2.5 rounded-lg border border-border text-muted text-sm hover:text-text min-h-[44px]"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div className="flex flex-col divide-y divide-border rounded-xl border border-border overflow-hidden bg-surface/40">
+            {!list || list.items.length === 0 ? (
+              <div className="px-4 py-10 text-sm text-muted text-center">
+                {tab === "picks"
+                  ? "No pending picks. Run today's analysis to populate."
+                  : "No settled results yet. They appear after games finish and settle."}
+              </div>
+            ) : (
+              list.items.map((p) => (
+                <PickRow key={p.id} pick={p} tab={tab} />
+              ))
+            )}
+          </div>
+
+          {list && list.totalPages > 1 && (
+            <div className="flex items-center justify-between gap-3 text-sm">
+              <button
+                type="button"
+                disabled={page <= 1}
+                onClick={() => goPage(page - 1)}
+                className="px-4 py-2.5 rounded-lg border border-border text-muted hover:text-text disabled:opacity-40 min-h-[44px]"
+              >
+                Prev
+              </button>
+              <span className="font-mono text-muted text-xs sm:text-sm text-center">
+                Page {list.page} of {list.totalPages} · {list.total}
+              </span>
+              <button
+                type="button"
+                disabled={page >= list.totalPages}
+                onClick={() => goPage(page + 1)}
+                className="px-4 py-2.5 rounded-lg border border-border text-muted hover:text-text disabled:opacity-40 min-h-[44px]"
+              >
+                Next
+              </button>
+            </div>
+          )}
+        </section>
+      </div>
     </main>
   );
 }

@@ -10,6 +10,7 @@ import {
   buildCombinations,
   buildDrawCombination,
 } from "@/lib/combinations";
+import { fetchMatchStatsMap } from "@/lib/statsApi";
 import { getSupabaseServer } from "@/lib/supabase";
 
 export const maxDuration = 60;
@@ -31,7 +32,8 @@ export async function POST() {
     const supabase = getSupabaseServer();
 
     const matches = await fetchTodaysOdds(apiKey);
-    const scored = scoreMatches(matches);
+    const statsByEvent = await fetchMatchStatsMap(matches);
+    const scored = scoreMatches(matches, statsByEvent);
     const bestPicks = pickBestPerEvent(scored);
     const categorized = categorizePicks(bestPicks);
     const mainCombos = buildCombinations(bestPicks);
@@ -88,10 +90,15 @@ export async function POST() {
           num_books: p.numBooks,
           price_spread: p.priceSpread,
           implied_prob: p.impliedProb,
-          confidence_score: p.confidenceScore,
+          confidence_score: p.rankScore ?? p.confidenceScore,
           confidence_band: p.confidenceBand,
           result: "pending",
-          raw: p.raw,
+          raw: {
+            ...(typeof p.raw === "object" && p.raw ? (p.raw as object) : {}),
+            statsHint: p.statsHint ?? null,
+            consensusScore: p.confidenceScore,
+            rankScore: p.rankScore,
+          },
         }))
       );
       if (matchesError) throw matchesError;
@@ -140,6 +147,7 @@ export async function POST() {
       matchCount: matches.length,
       pickCount: bestPicks.length,
       leagueCount: new Set(matches.map((m) => m.sport)).size,
+      statsMatched: statsByEvent.size,
       picks: bestPicks,
       categorized,
       combinations,

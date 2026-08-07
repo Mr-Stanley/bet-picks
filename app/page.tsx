@@ -22,6 +22,7 @@ type PickItem = {
   profit: number | null;
   homeScore: number | null;
   awayScore: number | null;
+  statsHint?: string | null;
 };
 
 type ComboLeg = {
@@ -138,7 +139,31 @@ function tierLabel(tier: string): string {
   return `Target ${tier}`;
 }
 
+function formatComboSlip(combo: Combination): string {
+  const lines = [
+    `${tierLabel(combo.tier)} @ ${combo.combinedOdds.toFixed(2)}x`,
+    ...combo.legs.map(
+      (leg, i) =>
+        `${i + 1}. ${leg.homeTeam} vs ${leg.awayTeam} — ${leg.selection} @ ${leg.bestPrice.toFixed(2)}`
+    ),
+  ];
+  return lines.join("\n");
+}
+
 function ComboCard({ combo }: { combo: Combination }) {
+  const [copied, setCopied] = useState(false);
+  const underTarget = combo.combinedOdds + 0.001 < combo.targetOdds;
+
+  async function copySlip() {
+    try {
+      await navigator.clipboard.writeText(formatComboSlip(combo));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    } catch {
+      /* ignore */
+    }
+  }
+
   return (
     <div className="combo-card rounded-xl border border-border bg-surface/80 backdrop-blur-sm p-4 sm:p-5 flex flex-col gap-4">
       <div className="flex items-baseline justify-between gap-3">
@@ -149,14 +174,29 @@ function ComboCard({ combo }: { combo: Combination }) {
           <div className="font-display text-2xl font-bold tabular-nums">
             {combo.combinedOdds.toFixed(2)}x
           </div>
+          {underTarget && (
+            <div className="text-[11px] text-warn mt-1">
+              Reached {combo.combinedOdds.toFixed(1)}x of {combo.targetOdds}x
+              target
+            </div>
+          )}
         </div>
-        <div className="text-right">
-          <div className="text-[11px] uppercase tracking-wide text-muted">
-            Implied
+        <div className="text-right flex flex-col items-end gap-2">
+          <div>
+            <div className="text-[11px] uppercase tracking-wide text-muted">
+              Implied
+            </div>
+            <div className="font-mono text-base sm:text-lg tabular-nums">
+              {(combo.impliedProbability * 100).toFixed(2)}%
+            </div>
           </div>
-          <div className="font-mono text-base sm:text-lg tabular-nums">
-            {(combo.impliedProbability * 100).toFixed(2)}%
-          </div>
+          <button
+            type="button"
+            onClick={copySlip}
+            className="text-xs px-2.5 py-1.5 rounded-md border border-border text-muted hover:text-text hover:border-accent transition-colors"
+          >
+            {copied ? "Copied" : "Copy slip"}
+          </button>
         </div>
       </div>
       <ProbabilityGauge probability={combo.impliedProbability} />
@@ -228,6 +268,11 @@ function PickRow({
           {pick.league ? ` · ${pick.league}` : ""} ·{" "}
           {formatKickoff(pick.commenceTime)} · {pick.marketLabel}
         </p>
+        {pick.statsHint && (
+          <p className="text-[11px] text-accent/80 font-mono leading-relaxed">
+            {pick.statsHint}
+          </p>
+        )}
       </div>
 
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
@@ -408,8 +453,12 @@ export default function Home() {
         typeof data.leagueCount === "number"
           ? ` across ${data.leagueCount} leagues`
           : "";
+      const stats =
+        typeof data.statsMatched === "number" && data.statsMatched > 0
+          ? ` · ${data.statsMatched} with form/H2H stats`
+          : "";
       setStatus(
-        `Run complete — ${data.pickCount} picks from ${data.matchCount} matches${leagues}.`
+        `Run complete — ${data.pickCount} picks from ${data.matchCount} matches${leagues}${stats}.`
       );
       setTab("picks");
       setPage(1);
@@ -506,11 +555,10 @@ export default function Home() {
             Daily Picks
           </h1>
           <p className="text-muted max-w-2xl text-sm sm:text-[15px] leading-relaxed">
-            Scans all in-season football, basketball, and tennis leagues from the
-            odds feed (including women, youth, and international when available).
-            One recommended pick per game, plus combo slips (2x–1000x and a draw
-            accumulator). Rescan anytime; settled games move to Results with
-            scores.
+            Scans all in-season football, basketball, and tennis leagues. Soccer
+            picks blend book consensus with form, H2H, goals, and corners when
+            API-Football is configured. One pick per game; combo slips soft-fill
+            and copy in one tap. Rescan anytime.
           </p>
 
           <div className="sticky top-0 z-20 -mx-4 sm:mx-0 px-4 sm:px-0 py-3 sm:py-0 sm:static bg-bg/85 sm:bg-transparent backdrop-blur-md sm:backdrop-blur-none border-b border-border/60 sm:border-0">

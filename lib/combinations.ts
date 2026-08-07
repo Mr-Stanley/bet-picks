@@ -1,5 +1,4 @@
-// Builds accumulator ("combo") slips out of the highest-confidence individual
-// picks, targeting 2x / 5x / 10x / 50x / 100x / 1000x, plus a draw slip.
+// Builds accumulator ("combo") slips — soft-fills every tier when possible.
 
 import { eventKey, ScoredPick } from "./scoring";
 
@@ -32,52 +31,53 @@ export type Combination = {
 };
 
 const MAX_LEGS = 25;
-const MIN_CONFIDENCE_FOR_COMBOS = 25;
+const CONFIDENCE_STEPS = [40, 25, 10, 0];
 
 function matchKey(p: ScoredPick): string {
   return eventKey(p);
 }
 
-/**
- * Prefer high-confidence, shorter prices so high tiers (50x–1000x) can be
- * reached with enough legs before MAX_LEGS.
- */
 function comboSort(a: ScoredPick, b: ScoredPick): number {
-  if (b.confidenceScore !== a.confidenceScore) {
-    return b.confidenceScore - a.confidenceScore;
-  }
+  const ar = a.rankScore ?? a.confidenceScore;
+  const br = b.rankScore ?? b.confidenceScore;
+  if (br !== ar) return br - ar;
   return a.bestPrice - b.bestPrice;
+}
+
+function shortFavoriteFirst(a: ScoredPick, b: ScoredPick): number {
+  const aShort = a.bestPrice <= 2.2 ? 0 : 1;
+  const bShort = b.bestPrice <= 2.2 ? 0 : 1;
+  if (aShort !== bShort) return aShort - bShort;
+  return comboSort(a, b);
 }
 
 function greedyCombo(
   usablePicks: ScoredPick[],
   tier: string,
   targetOdds: number,
-  opts?: { skipLongShots?: boolean }
+  preferShort: boolean
 ): Combination | null {
+  const ordered = preferShort
+    ? [...usablePicks].sort(shortFavoriteFirst)
+    : usablePicks;
+
   const usedMatches = new Set<string>();
   const legs: ScoredPick[] = [];
   let combinedOdds = 1;
 
-  for (const pick of usablePicks) {
+  for (const pick of ordered) {
     if (combinedOdds >= targetOdds) break;
     if (legs.length >= MAX_LEGS) break;
 
     const key = matchKey(pick);
     if (usedMatches.has(key)) continue;
 
-    // Skip very long shots as legs — they burn quota of MAX_LEGS without
-    // helping a clean high-confidence slip.
-    if (opts?.skipLongShots && pick.bestPrice > 3.5 && targetOdds >= 50) {
-      continue;
-    }
-
     legs.push(pick);
     usedMatches.add(key);
     combinedOdds *= pick.bestPrice;
   }
 
-  if (combinedOdds < targetOdds || legs.length === 0) return null;
+  if (legs.length === 0) return null;
 
   return {
     tier,
@@ -88,26 +88,43 @@ function greedyCombo(
   };
 }
 
+function buildWithRelaxation(
+  picks: ScoredPick[],
+  tier: string,
+  targetOdds: number,
+  preferShort: boolean,
+  drawOnly: boolean
+): Combination | null {
+  for (const minConf of CONFIDENCE_STEPS) {
+    const usable = picks
+      .filter((p) => {
+        if (drawOnly) {
+          if (p.category !== "draw") return false;
+        } else if (p.category === "draw") {
+          return false;
+        }
+        return (p.rankScore ?? p.confidenceScore) >= minConf;
+      })
+      .sort(comboSort);
+
+    const combo = greedyCombo(usable, tier, targetOdds, preferShort);
+    if (combo) return combo;
+  }
+  return null;
+}
+
 /**
- * Greedily builds one combination per main odds tier. Always returns an entry
- * per tier (null when there aren't enough qualifying picks to reach the target).
+ * Soft-fills one combination per main odds tier. Returns a slip whenever any
+ * usable legs exist (may be under target odds).
  */
 export function buildCombinations(picks: ScoredPick[]): (Combination | null)[] {
-  const usablePicks = picks
-    .filter(
-      (p) =>
-        p.confidenceScore >= MIN_CONFIDENCE_FOR_COMBOS && p.category !== "draw"
-    )
-    .sort(comboSort);
-
   return TIERS.map(({ tier, targetOdds }) =>
-    greedyCombo(usablePicks, tier, targetOdds, { skipLongShots: true })
+    buildWithRelaxation(picks, tier, targetOdds, targetOdds >= 50, false)
   );
 }
 
 /**
- * Draw-only accumulator from the full scored list: one draw per game, ranked
- * by highest implied probability, targeting ~5x.
+ * Draw-only soft-fill accumulator (~5x), one draw per game, highest impliedProb.
  */
 export function buildDrawCombination(
   allScoredPicks: ScoredPick[]
@@ -116,24 +133,24 @@ export function buildDrawCombination(
 
   for (const pick of allScoredPicks) {
     if (pick.category !== "draw") continue;
-    if (pick.confidenceScore < MIN_CONFIDENCE_FOR_COMBOS) continue;
-
     const key = matchKey(pick);
     const current = bestDrawByEvent.get(key);
     if (
       !current ||
       pick.impliedProb > current.impliedProb ||
       (pick.impliedProb === current.impliedProb &&
-        pick.confidenceScore > current.confidenceScore)
+        (pick.rankScore ?? pick.confidenceScore) >
+          (current.rankScore ?? current.confidenceScore))
     ) {
       bestDrawByEvent.set(key, pick);
     }
   }
 
-  const usablePicks = Array.from(bestDrawByEvent.values()).sort((a, b) => {
-    if (b.impliedProb !== a.impliedProb) return b.impliedProb - a.impliedProb;
-    return b.confidenceScore - a.confidenceScore;
-  });
-
-  return greedyCombo(usablePicks, DRAW_TIER.tier, DRAW_TIER.targetOdds);
+  return buildWithRelaxation(
+    Array.from(bestDrawByEvent.values()),
+    DRAW_TIER.tier,
+    DRAW_TIER.targetOdds,
+    false,
+    true
+  );
 }

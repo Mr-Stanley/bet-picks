@@ -47,7 +47,7 @@ export async function GET(req: Request) {
     const to = from + pageSize - 1;
 
     let query = supabase.from("matches").select(
-      "id, run_id, event_id, sport, league, home_team, away_team, commence_time, market, pick_selection, best_price, book, confidence_score, confidence_band, result, profit, home_score, away_score",
+      "id, run_id, event_id, sport, league, home_team, away_team, commence_time, market, pick_selection, best_price, book, confidence_score, confidence_band, result, profit, home_score, away_score, raw",
       { count: "exact" }
     );
 
@@ -98,34 +98,38 @@ export async function GET(req: Request) {
       ).sort();
     }
 
-    const items = (data ?? []).map((m) => ({
-      id: m.id,
-      runId: m.run_id,
-      eventId: m.event_id,
-      sport: m.sport,
-      league: m.league ?? "",
-      homeTeam: m.home_team,
-      awayTeam: m.away_team,
-      commenceTime: m.commence_time,
-      market: m.market,
-      marketLabel: marketLabel(m.market),
-      selection: m.pick_selection,
-      bestPrice: Number(m.best_price),
-      book: m.book ?? "unknown",
-      confidenceScore: Number(m.confidence_score),
-      confidenceBand: m.confidence_band as "high" | "medium" | "low",
-      result: m.result as "pending" | "won" | "lost" | "void",
-      profit:
-        m.profit === null || m.profit === undefined ? null : Number(m.profit),
-      homeScore:
-        m.home_score === null || m.home_score === undefined
-          ? null
-          : Number(m.home_score),
-      awayScore:
-        m.away_score === null || m.away_score === undefined
-          ? null
-          : Number(m.away_score),
-    }));
+    const items = (data ?? []).map((m) => {
+      const raw = m.raw as { statsHint?: string | null } | null;
+      return {
+        id: m.id,
+        runId: m.run_id,
+        eventId: m.event_id,
+        sport: m.sport,
+        league: m.league ?? "",
+        homeTeam: m.home_team,
+        awayTeam: m.away_team,
+        commenceTime: m.commence_time,
+        market: m.market,
+        marketLabel: marketLabel(m.market),
+        selection: m.pick_selection,
+        bestPrice: Number(m.best_price),
+        book: m.book ?? "unknown",
+        confidenceScore: Number(m.confidence_score),
+        confidenceBand: m.confidence_band as "high" | "medium" | "low",
+        result: m.result as "pending" | "won" | "lost" | "void",
+        profit:
+          m.profit === null || m.profit === undefined ? null : Number(m.profit),
+        homeScore:
+          m.home_score === null || m.home_score === undefined
+            ? null
+            : Number(m.home_score),
+        awayScore:
+          m.away_score === null || m.away_score === undefined
+            ? null
+            : Number(m.away_score),
+        statsHint: raw?.statsHint ?? null,
+      };
+    });
 
     const total = count ?? 0;
     const totalPages = Math.max(1, Math.ceil(total / pageSize));

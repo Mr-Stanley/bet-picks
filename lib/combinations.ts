@@ -1,26 +1,78 @@
-// Builds accumulator ("combo") slips — soft-fills every tier when possible.
+// Six risk-tiered accumulators from Step-1 qualified picks only.
 
 import { eventKey, ScoredPick } from "./scoring";
 
-export type Tier = {
+export type TierMeta = {
   tier: string;
   targetOdds: number;
+  minLegs: number;
+  maxLegs: number;
+  riskProfile: string;
+  slipNote: string;
+  requiresDisclaimer: boolean;
 };
 
-export const TIERS: Tier[] = [
-  { tier: "2x", targetOdds: 2 },
-  { tier: "5x", targetOdds: 5 },
-  { tier: "10x", targetOdds: 10 },
-  { tier: "50x", targetOdds: 50 },
-  { tier: "100x", targetOdds: 100 },
-  { tier: "1000x", targetOdds: 1000 },
+export const TIERS: TierMeta[] = [
+  {
+    tier: "2x",
+    targetOdds: 2,
+    minLegs: 1,
+    maxLegs: 2,
+    riskProfile: "Lowest",
+    slipNote: "core slip",
+    requiresDisclaimer: false,
+  },
+  {
+    tier: "5x",
+    targetOdds: 5,
+    minLegs: 2,
+    maxLegs: 3,
+    riskProfile: "Low-to-medium",
+    slipNote: "core slip",
+    requiresDisclaimer: false,
+  },
+  {
+    tier: "10x",
+    targetOdds: 10,
+    minLegs: 3,
+    maxLegs: 5,
+    riskProfile: "Medium",
+    slipNote: "core slip",
+    requiresDisclaimer: false,
+  },
+  {
+    tier: "50x",
+    targetOdds: 50,
+    minLegs: 5,
+    maxLegs: 8,
+    riskProfile: "Medium-to-high",
+    slipNote: "high-variance/longshot slip",
+    requiresDisclaimer: false,
+  },
+  {
+    tier: "100x",
+    targetOdds: 100,
+    minLegs: 7,
+    maxLegs: 10,
+    riskProfile: "High",
+    slipNote: "high-variance/longshot slip",
+    requiresDisclaimer: true,
+  },
+  {
+    tier: "1000x",
+    targetOdds: 1000,
+    minLegs: 10,
+    maxLegs: 25,
+    riskProfile: "Very high",
+    slipNote: "high-variance/longshot slip",
+    requiresDisclaimer: true,
+  },
 ];
 
-/** Separate draw accumulator (highest-probability draws, ~5x target). */
-export const DRAW_TIER: Tier = { tier: "draw", targetOdds: 5 };
+export const DISPLAY_TIERS = TIERS;
 
-/** Main odds tiers + draw slot for UI ordering. */
-export const DISPLAY_TIERS: Tier[] = [...TIERS, DRAW_TIER];
+export const HIGH_TIER_DISCLAIMER =
+  "Low-probability, high-variance combination included for entertainment/upside purposes — not the model's genuine confidence pick.";
 
 export type Combination = {
   tier: string;
@@ -28,129 +80,103 @@ export type Combination = {
   combinedOdds: number;
   impliedProbability: number;
   legs: ScoredPick[];
+  riskProfile: string;
+  slipNote: string;
+  targetReached: boolean;
+  disclaimer: string | null;
 };
-
-const MAX_LEGS = 25;
-const CONFIDENCE_STEPS = [40, 25, 10, 0];
 
 function matchKey(p: ScoredPick): string {
   return eventKey(p);
 }
 
-function comboSort(a: ScoredPick, b: ScoredPick): number {
+function byConfidence(a: ScoredPick, b: ScoredPick): number {
   const ar = a.rankScore ?? a.confidenceScore;
   const br = b.rankScore ?? b.confidenceScore;
   if (br !== ar) return br - ar;
   return a.bestPrice - b.bestPrice;
 }
 
-function shortFavoriteFirst(a: ScoredPick, b: ScoredPick): number {
+function shortFirst(a: ScoredPick, b: ScoredPick): number {
   const aShort = a.bestPrice <= 2.2 ? 0 : 1;
   const bShort = b.bestPrice <= 2.2 ? 0 : 1;
   if (aShort !== bShort) return aShort - bShort;
-  return comboSort(a, b);
+  return byConfidence(a, b);
 }
 
-function greedyCombo(
-  usablePicks: ScoredPick[],
-  tier: string,
-  targetOdds: number,
-  preferShort: boolean
+function buildTier(
+  picks: ScoredPick[],
+  meta: TierMeta
 ): Combination | null {
-  const ordered = preferShort
-    ? [...usablePicks].sort(shortFavoriteFirst)
-    : usablePicks;
+  if (picks.length === 0) return null;
 
-  const usedMatches = new Set<string>();
+  // Low tiers: highest confidence first. High tiers: short favorites first.
+  const ordered =
+    meta.targetOdds >= 50
+      ? [...picks].sort(shortFirst)
+      : [...picks].sort(byConfidence);
+
+  // For low-risk tiers, only use stronger legs
+  const minRank =
+    meta.targetOdds <= 2 ? 70 : meta.targetOdds <= 5 ? 55 : meta.targetOdds <= 10 ? 40 : 0;
+  let pool = ordered.filter(
+    (p) => (p.rankScore ?? p.confidenceScore) >= minRank
+  );
+  if (pool.length === 0) pool = ordered;
+
+  const used = new Set<string>();
   const legs: ScoredPick[] = [];
-  let combinedOdds = 1;
+  let combined = 1;
 
-  for (const pick of ordered) {
-    if (combinedOdds >= targetOdds) break;
-    if (legs.length >= MAX_LEGS) break;
+  for (const pick of pool) {
+    if (legs.length >= meta.maxLegs) break;
+    if (combined >= meta.targetOdds && legs.length >= meta.minLegs) break;
 
     const key = matchKey(pick);
-    if (usedMatches.has(key)) continue;
+    if (used.has(key)) continue;
 
     legs.push(pick);
-    usedMatches.add(key);
-    combinedOdds *= pick.bestPrice;
+    used.add(key);
+    combined *= pick.bestPrice;
   }
 
+  // If under min legs but we have legs, keep soft-fill
   if (legs.length === 0) return null;
 
-  return {
-    tier,
-    targetOdds,
-    combinedOdds: Math.round(combinedOdds * 100) / 100,
-    impliedProbability: 1 / combinedOdds,
-    legs,
-  };
-}
-
-function buildWithRelaxation(
-  picks: ScoredPick[],
-  tier: string,
-  targetOdds: number,
-  preferShort: boolean,
-  drawOnly: boolean
-): Combination | null {
-  for (const minConf of CONFIDENCE_STEPS) {
-    const usable = picks
-      .filter((p) => {
-        if (drawOnly) {
-          if (p.category !== "draw") return false;
-        } else if (p.category === "draw") {
-          return false;
-        }
-        return (p.rankScore ?? p.confidenceScore) >= minConf;
-      })
-      .sort(comboSort);
-
-    const combo = greedyCombo(usable, tier, targetOdds, preferShort);
-    if (combo) return combo;
-  }
-  return null;
-}
-
-/**
- * Soft-fills one combination per main odds tier. Returns a slip whenever any
- * usable legs exist (may be under target odds).
- */
-export function buildCombinations(picks: ScoredPick[]): (Combination | null)[] {
-  return TIERS.map(({ tier, targetOdds }) =>
-    buildWithRelaxation(picks, tier, targetOdds, targetOdds >= 50, false)
-  );
-}
-
-/**
- * Draw-only soft-fill accumulator (~5x), one draw per game, highest impliedProb.
- */
-export function buildDrawCombination(
-  allScoredPicks: ScoredPick[]
-): Combination | null {
-  const bestDrawByEvent = new Map<string, ScoredPick>();
-
-  for (const pick of allScoredPicks) {
-    if (pick.category !== "draw") continue;
-    const key = matchKey(pick);
-    const current = bestDrawByEvent.get(key);
-    if (
-      !current ||
-      pick.impliedProb > current.impliedProb ||
-      (pick.impliedProb === current.impliedProb &&
-        (pick.rankScore ?? pick.confidenceScore) >
-          (current.rankScore ?? current.confidenceScore))
-    ) {
-      bestDrawByEvent.set(key, pick);
+  // Try to reach target with more short-priced legs if still short
+  if (combined < meta.targetOdds && legs.length < meta.maxLegs) {
+    for (const pick of ordered) {
+      if (combined >= meta.targetOdds) break;
+      if (legs.length >= meta.maxLegs) break;
+      const key = matchKey(pick);
+      if (used.has(key)) continue;
+      legs.push(pick);
+      used.add(key);
+      combined *= pick.bestPrice;
     }
   }
 
-  return buildWithRelaxation(
-    Array.from(bestDrawByEvent.values()),
-    DRAW_TIER.tier,
-    DRAW_TIER.targetOdds,
-    false,
-    true
-  );
+  const targetReached = combined >= meta.targetOdds * 0.98;
+
+  return {
+    tier: meta.tier,
+    targetOdds: meta.targetOdds,
+    combinedOdds: Math.round(combined * 100) / 100,
+    impliedProbability: 1 / combined,
+    legs,
+    riskProfile: meta.riskProfile,
+    slipNote: meta.slipNote,
+    targetReached,
+    disclaimer: meta.requiresDisclaimer ? HIGH_TIER_DISCLAIMER : null,
+  };
+}
+
+/**
+ * Build six accumulators from Step-1 picks only. Always returns an array of
+ * length 6 (null entries when zero qualified picks).
+ */
+export function buildCombinations(
+  picks: ScoredPick[]
+): (Combination | null)[] {
+  return TIERS.map((meta) => buildTier(picks, meta));
 }

@@ -1,15 +1,20 @@
 import { NextResponse } from "next/server";
+import {
+  analysisWindowLabel,
+  currentCalendarDayStart,
+  nextCalendarDayStart,
+} from "@/lib/scanLock";
 import { fetchTodaysOdds } from "@/lib/oddsApi";
 import {
-  categorizePicks,
   pickBestPerEvent,
   scoreMatches,
   ScoredPick,
 } from "@/lib/scoring";
+import { buildCombinations } from "@/lib/combinations";
 import {
-  buildCombinations,
-  buildDrawCombination,
-} from "@/lib/combinations";
+  buildMatchReports,
+  qualifiedPicksFromReports,
+} from "@/lib/analyst";
 import { fetchMatchStatsMap } from "@/lib/statsApi";
 import { getSupabaseServer } from "@/lib/supabase";
 
@@ -19,7 +24,19 @@ function pickInsertKey(p: ScoredPick): string {
   return `${p.homeTeam}__${p.awayTeam}__${p.commenceTime}__${p.selection}`;
 }
 
-export async function POST() {
+async function parseForce(req: Request): Promise<boolean> {
+  const url = new URL(req.url);
+  if (url.searchParams.get("force") === "true") return true;
+  try {
+    const clone = req.clone();
+    const body = await clone.json();
+    return body?.force === true;
+  } catch {
+    return false;
+  }
+}
+
+export async function POST(req: Request) {
   try {
     const apiKey = process.env.ODDS_API_KEY;
     if (!apiKey) {
@@ -29,38 +46,70 @@ export async function POST() {
       );
     }
 
+    const force = await parseForce(req);
+
     const supabase = getSupabaseServer();
+    const dayStart = currentCalendarDayStart();
+    const nextDay = nextCalendarDayStart();
+
+    const { data: todaysRun, error: todaysError } = await supabase
+      .from("runs")
+      .select("id, created_at")
+      .gte("created_at", dayStart.toISOString())
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (todaysError) throw todaysError;
+
+    if (todaysRun && !force) {
+      return NextResponse.json(
+        {
+          error:
+            "Scan already cached for today. Refuse to re-run until the next calendar day unless you explicitly force a re-scan.",
+          runId: todaysRun.id,
+          ranAt: todaysRun.created_at,
+          scanLocked: true,
+          canRunToday: false,
+          nextUnlockAt: nextDay.toISOString(),
+          windowLabel: analysisWindowLabel(),
+        },
+        { status: 429 }
+      );
+    }
 
     const matches = await fetchTodaysOdds(apiKey);
     const statsByEvent = await fetchMatchStatsMap(matches);
     const scored = scoreMatches(matches, statsByEvent);
-    const bestPicks = pickBestPerEvent(scored);
-    const categorized = categorizePicks(bestPicks);
-    const mainCombos = buildCombinations(bestPicks);
-    const drawCombo = buildDrawCombination(scored);
-    const combinations = [...mainCombos, drawCombo];
+    const bestPerEvent = pickBestPerEvent(scored);
+    const reports = buildMatchReports(bestPerEvent, statsByEvent);
+    const qualified = qualifiedPicksFromReports(reports);
+    const combinations = buildCombinations(qualified);
 
-    // Persist one pick per game, plus any draw-combo legs not already selected.
-    const toInsert: ScoredPick[] = [...bestPicks];
-    const insertedKeys = new Set(bestPicks.map(pickInsertKey));
-    if (drawCombo) {
-      for (const leg of drawCombo.legs) {
-        const key = pickInsertKey(leg);
-        if (!insertedKeys.has(key)) {
-          toInsert.push(leg);
-          insertedKeys.add(key);
-        }
-      }
+    const toInsert: ScoredPick[] = [...qualified];
+    // Also persist no-pick events as placeholder rows? Plan says table of all matches.
+    // Store all bestPerEvent with analysis; only qualified have real picks for combos.
+    // For no-pick rows use a sentinel selection so UI can show the report.
+    const insertedKeys = new Set(qualified.map(pickInsertKey));
+    for (const report of reports) {
+      if (report.scoredPick) continue;
+      const stub: ScoredPick = bestPerEvent.find(
+        (p) => p.eventId === report.eventId
+      )!;
+      if (!stub) continue;
+      const key = pickInsertKey(stub);
+      if (insertedKeys.has(key)) continue;
+      toInsert.push(stub);
+      insertedKeys.add(key);
     }
 
-    // Active picks belong to the current run only — clear previous pending
-    // rows so they don't mix with the new slip. Settled results are kept.
     const { error: clearPendingError } = await supabase
       .from("matches")
       .delete()
       .eq("result", "pending");
     if (clearPendingError) throw clearPendingError;
 
+    // On force re-scan, also drop today's prior combinations via cascade when we
+    // don't delete runs — pending matches cleared; old run rows remain history.
     const { data: run, error: runError } = await supabase
       .from("runs")
       .insert({
@@ -73,33 +122,63 @@ export async function POST() {
 
     if (runError) throw runError;
 
+    const reportByEvent = new Map(reports.map((r) => [r.eventId, r]));
+
     if (toInsert.length > 0) {
       const { error: matchesError } = await supabase.from("matches").insert(
-        toInsert.map((p) => ({
-          run_id: run.id,
-          event_id: p.eventId,
-          sport: p.sport,
-          league: p.league,
-          home_team: p.homeTeam,
-          away_team: p.awayTeam,
-          commence_time: p.commenceTime,
-          market: p.market,
-          pick_selection: p.selection,
-          best_price: p.bestPrice,
-          book: p.book,
-          num_books: p.numBooks,
-          price_spread: p.priceSpread,
-          implied_prob: p.impliedProb,
-          confidence_score: p.rankScore ?? p.confidenceScore,
-          confidence_band: p.confidenceBand,
-          result: "pending",
-          raw: {
-            ...(typeof p.raw === "object" && p.raw ? (p.raw as object) : {}),
-            statsHint: p.statsHint ?? null,
-            consensusScore: p.confidenceScore,
-            rankScore: p.rankScore,
-          },
-        }))
+        toInsert.map((p) => {
+          const report = reportByEvent.get(p.eventId);
+          const isQualified = Boolean(report?.scoredPick);
+          return {
+            run_id: run.id,
+            event_id: p.eventId,
+            sport: p.sport,
+            league: p.league,
+            home_team: p.homeTeam,
+            away_team: p.awayTeam,
+            commence_time: p.commenceTime,
+            market: isQualified ? p.market : p.market,
+            pick_selection: isQualified
+              ? p.selection
+              : report?.noPickReason ?? "no pick — insufficient data",
+            best_price: p.bestPrice,
+            book: p.book,
+            num_books: p.numBooks,
+            price_spread: p.priceSpread,
+            implied_prob: p.impliedProb,
+            confidence_score: report?.confidence ?? p.rankScore ?? p.confidenceScore,
+            confidence_band: p.confidenceBand,
+            result: "pending",
+            raw: {
+              analysis: report
+                ? {
+                    form: report.form,
+                    h2h: report.h2h,
+                    injuries: report.injuries,
+                    context: report.context,
+                    weather: report.weather,
+                    referee: report.referee,
+                    lineMovement: report.lineMovement,
+                    marketNotes: report.marketNotes,
+                    assessedProb: report.assessedProb,
+                    impliedProb: report.impliedProb,
+                    valueFlag: report.valueFlag,
+                    risk: report.risk,
+                    confidence: report.confidence,
+                    justification: report.justification,
+                    whatCouldGoWrong: report.whatCouldGoWrong,
+                    pickSelection: report.pickSelection,
+                    pickOdds: report.pickOdds,
+                    noPickReason: report.noPickReason,
+                  }
+                : null,
+              statsHint: p.statsHint ?? null,
+              consensusScore: p.confidenceScore,
+              rankScore: p.rankScore,
+              hasPick: isQualified,
+            },
+          };
+        })
       );
       if (matchesError) throw matchesError;
     }
@@ -145,13 +224,15 @@ export async function POST() {
     return NextResponse.json({
       runId: run.id,
       matchCount: matches.length,
-      pickCount: bestPicks.length,
+      pickCount: qualified.length,
+      reportCount: reports.length,
       leagueCount: new Set(matches.map((m) => m.sport)).size,
       statsMatched: statsByEvent.size,
-      picks: bestPicks,
-      categorized,
+      reports,
       combinations,
-      canRunToday: true,
+      scanLocked: true,
+      canRunToday: false,
+      nextUnlockAt: nextDay.toISOString(),
     });
   } catch (err: any) {
     console.error(err);

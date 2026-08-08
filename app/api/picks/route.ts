@@ -99,7 +99,25 @@ export async function GET(req: Request) {
     }
 
     const items = (data ?? []).map((m) => {
-      const raw = m.raw as { statsHint?: string | null } | null;
+      const raw = m.raw as {
+        statsHint?: string | null;
+        hasPick?: boolean;
+        analysis?: {
+          form?: string;
+          h2h?: string;
+          injuries?: string;
+          context?: string;
+          risk?: string | null;
+          confidence?: number | null;
+          justification?: string;
+          whatCouldGoWrong?: string;
+          pickSelection?: string | null;
+          pickOdds?: number | null;
+          noPickReason?: string | null;
+          valueFlag?: boolean;
+        } | null;
+      } | null;
+      const a = raw?.analysis;
       return {
         id: m.id,
         runId: m.run_id,
@@ -128,6 +146,23 @@ export async function GET(req: Request) {
             ? null
             : Number(m.away_score),
         statsHint: raw?.statsHint ?? null,
+        hasPick: raw?.hasPick !== false && !a?.noPickReason,
+        analysis: a
+          ? {
+              form: a.form ?? "unavailable",
+              h2h: a.h2h ?? "unavailable",
+              injuries: a.injuries ?? "unavailable",
+              context: a.context ?? "unavailable",
+              risk: a.risk ?? null,
+              confidence: a.confidence ?? null,
+              justification: a.justification ?? "",
+              whatCouldGoWrong: a.whatCouldGoWrong ?? "",
+              pickSelection: a.pickSelection ?? null,
+              pickOdds: a.pickOdds ?? null,
+              noPickReason: a.noPickReason ?? null,
+              valueFlag: Boolean(a.valueFlag),
+            }
+          : null,
       };
     });
 

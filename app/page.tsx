@@ -23,6 +23,21 @@ type PickItem = {
   homeScore: number | null;
   awayScore: number | null;
   statsHint?: string | null;
+  hasPick?: boolean;
+  analysis?: {
+    form: string;
+    h2h: string;
+    injuries: string;
+    context: string;
+    risk: string | null;
+    confidence: number | null;
+    justification: string;
+    whatCouldGoWrong: string;
+    pickSelection: string | null;
+    pickOdds: number | null;
+    noPickReason: string | null;
+    valueFlag: boolean;
+  } | null;
 };
 
 type ComboLeg = {
@@ -43,6 +58,10 @@ type Combination = {
   combinedOdds: number;
   impliedProbability: number;
   legs: ComboLeg[];
+  riskProfile?: string;
+  slipNote?: string;
+  targetReached?: boolean;
+  disclaimer?: string | null;
 };
 
 type LatestRun = {
@@ -52,6 +71,7 @@ type LatestRun = {
   combinations: Combination[];
   canRunToday: boolean;
   ranToday?: boolean;
+  scanLocked?: boolean;
   nextUnlockAt?: string;
   windowLabel?: string;
 };
@@ -135,24 +155,26 @@ function resultBadge(result: PickItem["result"]) {
 }
 
 function tierLabel(tier: string): string {
-  if (tier === "draw") return "Draw accumulator";
   return `Target ${tier}`;
 }
 
 function formatComboSlip(combo: Combination): string {
   const lines = [
-    `${tierLabel(combo.tier)} @ ${combo.combinedOdds.toFixed(2)}x`,
+    `${tierLabel(combo.tier)} @ ${combo.combinedOdds.toFixed(2)}x (${combo.riskProfile ?? ""} · ${combo.slipNote ?? ""})`,
     ...combo.legs.map(
       (leg, i) =>
         `${i + 1}. ${leg.homeTeam} vs ${leg.awayTeam} — ${leg.selection} @ ${leg.bestPrice.toFixed(2)}`
     ),
   ];
+  if (combo.disclaimer) lines.push("", combo.disclaimer);
   return lines.join("\n");
 }
 
 function ComboCard({ combo }: { combo: Combination }) {
   const [copied, setCopied] = useState(false);
-  const underTarget = combo.combinedOdds + 0.001 < combo.targetOdds;
+  const underTarget =
+    combo.targetReached === false ||
+    combo.combinedOdds + 0.001 < combo.targetOdds;
 
   async function copySlip() {
     try {
@@ -164,20 +186,40 @@ function ComboCard({ combo }: { combo: Combination }) {
     }
   }
 
+  if (combo.legs.length === 0) {
+    return (
+      <div className="combo-card rounded-xl border border-dashed border-border/80 p-4 sm:p-5 text-sm text-muted bg-surface/30">
+        <div className="font-display text-lg font-bold text-text mb-1">
+          {tierLabel(combo.tier)}
+        </div>
+        <div className="text-xs mb-2">
+          {combo.riskProfile} · {combo.slipNote}
+        </div>
+        Not enough Step-1 picks to build this slip today.
+        {combo.disclaimer && (
+          <p className="mt-3 text-[11px] text-warn leading-relaxed">
+            {combo.disclaimer}
+          </p>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="combo-card rounded-xl border border-border bg-surface/80 backdrop-blur-sm p-4 sm:p-5 flex flex-col gap-4">
       <div className="flex items-baseline justify-between gap-3">
         <div>
           <div className="text-[11px] uppercase tracking-wide text-muted">
-            {tierLabel(combo.tier)}
+            {tierLabel(combo.tier)} · {combo.riskProfile}
           </div>
           <div className="font-display text-2xl font-bold tabular-nums">
             {combo.combinedOdds.toFixed(2)}x
           </div>
+          <div className="text-[11px] text-muted mt-0.5">{combo.slipNote}</div>
           {underTarget && (
             <div className="text-[11px] text-warn mt-1">
-              Reached {combo.combinedOdds.toFixed(1)}x of {combo.targetOdds}x
-              target
+              Closest achievable: {combo.combinedOdds.toFixed(1)}x (target{" "}
+              {combo.targetOdds}x)
             </div>
           )}
         </div>
@@ -204,6 +246,11 @@ function ComboCard({ combo }: { combo: Combination }) {
         {combo.legs.length} leg{combo.legs.length !== 1 ? "s" : ""} — every leg
         must win
       </div>
+      {combo.disclaimer && (
+        <p className="text-[11px] text-warn leading-relaxed border border-warn/20 rounded-lg px-3 py-2 bg-warn/5">
+          {combo.disclaimer}
+        </p>
+      )}
       <div className="flex flex-col gap-2">
         {combo.legs.map((leg, i) => (
           <div
@@ -223,7 +270,7 @@ function ComboCard({ combo }: { combo: Combination }) {
               <span
                 className={`text-xs font-mono ${bandColor[leg.confidenceBand]}`}
               >
-                {leg.bestPrice.toFixed(2)} · {leg.confidenceScore}/100
+                {leg.bestPrice.toFixed(2)} · {leg.confidenceScore}/10
               </span>
             </div>
           </div>
@@ -241,6 +288,11 @@ function PickRow({
   tab: "picks" | "results";
 }) {
   const scoreLabel = formatScore(pick.homeScore, pick.awayScore);
+  const a = pick.analysis;
+  const displayPick =
+    a?.noPickReason ?? a?.pickSelection ?? pick.selection;
+  const displayOdds = a?.pickOdds ?? pick.bestPrice;
+  const conf = a?.confidence ?? Math.round(pick.confidenceScore / 10);
 
   return (
     <article className="flex flex-col gap-3 px-4 py-4 sm:px-5 bg-surface/60 hover:bg-surface transition-colors">
@@ -262,17 +314,17 @@ function PickRow({
               </span>
             </div>
           )}
+          {tab === "picks" && a?.risk && (
+            <span className="text-[11px] uppercase tracking-wide px-2 py-0.5 rounded-md bg-surfaceRaised text-muted shrink-0">
+              {a.risk} risk
+            </span>
+          )}
         </div>
         <p className="text-muted text-xs leading-relaxed">
           <span className="uppercase tracking-wide">{pick.sport}</span>
           {pick.league ? ` · ${pick.league}` : ""} ·{" "}
           {formatKickoff(pick.commenceTime)} · {pick.marketLabel}
         </p>
-        {pick.statsHint && (
-          <p className="text-[11px] text-accent/80 font-mono leading-relaxed">
-            {pick.statsHint}
-          </p>
-        )}
       </div>
 
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
@@ -280,16 +332,18 @@ function PickRow({
           <span className="text-[11px] uppercase tracking-wide text-muted">
             Pick
           </span>
-          <span className="font-mono truncate">{pick.selection}</span>
+          <span className="font-mono truncate">{displayPick}</span>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="text-[11px] uppercase tracking-wide text-muted">
-            Odds
-          </span>
-          <span className="font-mono tabular-nums">
-            {pick.bestPrice.toFixed(2)}
-          </span>
-        </div>
+        {!a?.noPickReason && (
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] uppercase tracking-wide text-muted">
+              Odds
+            </span>
+            <span className="font-mono tabular-nums">
+              {displayOdds.toFixed(2)}
+            </span>
+          </div>
+        )}
         {tab === "results" ? (
           <div className="flex items-center gap-2 ml-auto">
             <span className="text-[11px] uppercase tracking-wide text-muted">
@@ -310,14 +364,30 @@ function PickRow({
             </span>
           </div>
         ) : (
-          <div className="ml-auto">
-            <ConfidenceBar
-              score={pick.confidenceScore}
-              band={pick.confidenceBand}
-            />
+          <div className="ml-auto font-mono text-xs tabular-nums text-muted">
+            Conf {conf}/10
           </div>
         )}
       </div>
+
+      {tab === "picks" && a && (
+        <div className="grid gap-2 text-xs text-muted border-t border-border/60 pt-3">
+          <p>
+            <span className="text-text/80">Justification:</span>{" "}
+            {a.justification || "—"}
+          </p>
+          <p>
+            <span className="text-text/80">What could go wrong:</span>{" "}
+            {a.whatCouldGoWrong || "—"}
+          </p>
+          <p className="font-mono text-[11px] text-accent/80">
+            Form: {a.form} · H2H: {a.h2h}
+          </p>
+          <p className="font-mono text-[11px]">
+            Injuries: {a.injuries} · Context: {a.context}
+          </p>
+        </div>
+      )}
     </article>
   );
 }
@@ -337,20 +407,25 @@ export default function Home() {
   const [filterFrom, setFilterFrom] = useState("");
   const [filterTo, setFilterTo] = useState("");
   const [ranToday, setRanToday] = useState(false);
+  const [scanLocked, setScanLocked] = useState(false);
+  const [nextUnlockAt, setNextUnlockAt] = useState<string | null>(null);
 
   const loadLatest = useCallback(async () => {
     const res = await fetch("/api/latest-run");
     const data = await res.json();
     if (!res.ok) throw new Error(data.error ?? "Failed to load latest run.");
     setRanToday(Boolean(data.ranToday));
+    setScanLocked(Boolean(data.scanLocked));
+    setNextUnlockAt(data.nextUnlockAt ?? null);
     if (data.runId) {
       setLatest({
         runId: data.runId,
         matchCount: data.matchCount,
         createdAt: data.createdAt,
         combinations: data.combinations ?? [],
-        canRunToday: true,
+        canRunToday: Boolean(data.canRunToday),
         ranToday: Boolean(data.ranToday),
+        scanLocked: Boolean(data.scanLocked),
         nextUnlockAt: data.nextUnlockAt,
         windowLabel: data.windowLabel,
       });
@@ -441,12 +516,16 @@ export default function Home() {
     return () => window.removeEventListener("focus", onFocus);
   }, [settleAndRefresh]);
 
-  async function runAnalysis() {
+  async function runAnalysis(force = false) {
     setLoading(true);
     setError(null);
     setStatus(null);
     try {
-      const res = await fetch("/api/run-analysis", { method: "POST" });
+      const res = await fetch("/api/run-analysis", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force }),
+      });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Run failed.");
       const leagues =
@@ -458,7 +537,7 @@ export default function Home() {
           ? ` · ${data.statsMatched} with form/H2H stats`
           : "";
       setStatus(
-        `Run complete — ${data.pickCount} picks from ${data.matchCount} matches${leagues}${stats}.`
+        `Scan complete — ${data.pickCount} qualified picks from ${data.matchCount} matches${leagues}${stats}. Cached until next calendar day.`
       );
       setTab("picks");
       setPage(1);
@@ -555,25 +634,35 @@ export default function Home() {
             Daily Picks
           </h1>
           <p className="text-muted max-w-2xl text-sm sm:text-[15px] leading-relaxed">
-            Scans all in-season football, basketball, and tennis leagues. Soccer
-            picks blend book consensus with form, H2H, goals, and corners when
-            API-Football is configured. One pick per game; combo slips soft-fill
-            and copy in one tap. Rescan anytime.
+            Once-daily research scan: form, H2H, injuries/context when available,
+            market consensus, and risk-rated picks. Builds six accumulators
+            (~2x→~1000x) from Step-1 picks only. Missing data is marked
+            unavailable — never invented. Force re-scan only when you explicitly
+            choose it.
           </p>
 
           <div className="sticky top-0 z-20 -mx-4 sm:mx-0 px-4 sm:px-0 py-3 sm:py-0 sm:static bg-bg/85 sm:bg-transparent backdrop-blur-md sm:backdrop-blur-none border-b border-border/60 sm:border-0">
             <div className="flex flex-col sm:flex-row gap-2 sm:gap-3">
               <button
-                onClick={runAnalysis}
-                disabled={loading}
+                onClick={() => runAnalysis(false)}
+                disabled={loading || scanLocked}
                 className="w-full sm:w-auto font-medium px-5 py-3 sm:py-2.5 rounded-lg bg-accent text-bg hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed min-h-[44px]"
               >
                 {loading
-                  ? "Scanning all leagues..."
-                  : ranToday
-                    ? "Rescan today"
+                  ? "Running research scan..."
+                  : scanLocked
+                    ? "Cached for today"
                     : "Run today's analysis"}
               </button>
+              {scanLocked && (
+                <button
+                  onClick={() => runAnalysis(true)}
+                  disabled={loading}
+                  className="w-full sm:w-auto px-4 py-3 sm:py-2.5 rounded-lg border border-warn/50 text-sm text-warn hover:bg-warn/10 transition-colors min-h-[44px] disabled:opacity-50"
+                >
+                  Force re-scan
+                </button>
+              )}
               <button
                 onClick={settleNow}
                 className="w-full sm:w-auto px-4 py-3 sm:py-2.5 rounded-lg border border-border text-sm text-muted hover:text-text hover:border-accent transition-colors min-h-[44px]"
@@ -592,9 +681,12 @@ export default function Home() {
             <div className="text-muted text-sm font-mono">{status}</div>
           )}
           <div className="text-xs text-muted font-mono leading-relaxed">
-            Auto-refresh every 5m · full league scan on each run
+            One scan per calendar day · auto-settle every 5m
             {lastSettleAt
               ? ` · last settle ${new Date(lastSettleAt).toLocaleTimeString()}`
+              : ""}
+            {scanLocked && nextUnlockAt
+              ? ` · next free scan ${new Date(nextUnlockAt).toLocaleString()}`
               : ""}
           </div>
         </header>
@@ -608,28 +700,15 @@ export default function Home() {
 
             <section className="flex flex-col gap-4 sm:gap-5">
               <h2 className="font-display text-lg sm:text-xl font-bold">
-                Combo tiers
+                Accumulators
                 <span className="block sm:inline font-body text-sm font-normal text-muted sm:ml-2">
-                  2x · 5x · 10x · 50x · 100x · 1000x · Draw
+                  ~2x · ~5x · ~10x · ~50x · ~100x · ~1000x
                 </span>
               </h2>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-5">
-                {latest.combinations.map((combo) =>
-                  combo.legs.length > 0 ? (
-                    <ComboCard key={combo.tier} combo={combo} />
-                  ) : (
-                    <div
-                      key={combo.tier}
-                      className="combo-card rounded-xl border border-dashed border-border/80 p-4 sm:p-5 text-sm text-muted bg-surface/30"
-                    >
-                      <div className="font-display text-lg font-bold text-text mb-1">
-                        {tierLabel(combo.tier)}
-                      </div>
-                      Not enough high-confidence legs today to honestly reach
-                      this tier.
-                    </div>
-                  )
-                )}
+                {latest.combinations.map((combo) => (
+                  <ComboCard key={combo.tier} combo={combo} />
+                ))}
               </div>
             </section>
           </>

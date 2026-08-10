@@ -15,7 +15,19 @@ export async function GET() {
   try {
     const supabase = getSupabaseServer();
     const dayStart = currentCalendarDayStart();
-    const nextDay = nextCalendarDayStart();
+    const nextUnlock = nextCalendarDayStart();
+
+    const { data: todayRun } = await supabase
+      .from("runs")
+      .select("id")
+      .gte("created_at", dayStart.toISOString())
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    const ranToday = Boolean(todayRun);
+    const scanLocked = ranToday;
+    const canRunToday = !ranToday;
 
     const { data: run, error: runError } = await supabase
       .from("runs")
@@ -31,15 +43,10 @@ export async function GET() {
         canRunToday: true,
         ranToday: false,
         scanLocked: false,
-        nextUnlockAt: nextDay.toISOString(),
+        nextUnlockAt: nextUnlock.toISOString(),
         windowLabel: analysisWindowLabel(),
       });
     }
-
-    const ranToday =
-      new Date(run.created_at).getTime() >= dayStart.getTime();
-    const scanLocked = ranToday;
-    const canRunToday = !ranToday;
 
     const { data: combinations, error: comboError } = await supabase
       .from("combinations")
@@ -81,6 +88,10 @@ export async function GET() {
             riskProfile: meta?.riskProfile ?? "Medium",
             slipNote: meta?.slipNote ?? "core slip",
             targetReached: combinedOdds >= targetOdds * 0.98,
+            underfillNote:
+              combinedOdds >= targetOdds * 0.98
+                ? null
+                : `Closest achievable: ${combinedOdds.toFixed(1)}x (target ${targetOdds}x) — soft-filled from available Step-1 picks.`,
             disclaimer: meta?.requiresDisclaimer ? HIGH_TIER_DISCLAIMER : null,
             legs: (c.match_ids ?? [])
               .map((id: string) => matchById.get(id))
@@ -114,6 +125,8 @@ export async function GET() {
         riskProfile: meta.riskProfile,
         slipNote: meta.slipNote,
         targetReached: false,
+        underfillNote:
+          "Not enough Step-1 picks to reach this target today.",
         disclaimer: meta.requiresDisclaimer ? HIGH_TIER_DISCLAIMER : null,
         legs: [] as any[],
       };
@@ -127,7 +140,7 @@ export async function GET() {
       canRunToday,
       ranToday,
       scanLocked,
-      nextUnlockAt: nextDay.toISOString(),
+      nextUnlockAt: nextUnlock.toISOString(),
       windowLabel: analysisWindowLabel(),
       combinations: ordered,
     });

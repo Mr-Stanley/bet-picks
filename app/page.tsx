@@ -61,6 +61,7 @@ type Combination = {
   riskProfile?: string;
   slipNote?: string;
   targetReached?: boolean;
+  underfillNote?: string | null;
   disclaimer?: string | null;
 };
 
@@ -167,6 +168,7 @@ function formatComboSlip(combo: Combination): string {
     ),
   ];
   if (combo.disclaimer) lines.push("", combo.disclaimer);
+  if (combo.underfillNote) lines.push("", combo.underfillNote);
   return lines.join("\n");
 }
 
@@ -175,6 +177,11 @@ function ComboCard({ combo }: { combo: Combination }) {
   const underTarget =
     combo.targetReached === false ||
     combo.combinedOdds + 0.001 < combo.targetOdds;
+  const underfill =
+    combo.underfillNote ??
+    (underTarget
+      ? `Closest achievable: ${combo.combinedOdds.toFixed(1)}x (target ${combo.targetOdds}x)`
+      : null);
 
   async function copySlip() {
     try {
@@ -195,7 +202,7 @@ function ComboCard({ combo }: { combo: Combination }) {
         <div className="text-xs mb-2">
           {combo.riskProfile} · {combo.slipNote}
         </div>
-        Not enough Step-1 picks to build this slip today.
+        {underfill ?? "Not enough Step-1 picks to build this slip today."}
         {combo.disclaimer && (
           <p className="mt-3 text-[11px] text-warn leading-relaxed">
             {combo.disclaimer}
@@ -216,11 +223,8 @@ function ComboCard({ combo }: { combo: Combination }) {
             {combo.combinedOdds.toFixed(2)}x
           </div>
           <div className="text-[11px] text-muted mt-0.5">{combo.slipNote}</div>
-          {underTarget && (
-            <div className="text-[11px] text-warn mt-1">
-              Closest achievable: {combo.combinedOdds.toFixed(1)}x (target{" "}
-              {combo.targetOdds}x)
-            </div>
+          {underfill && (
+            <div className="text-[11px] text-warn mt-1">{underfill}</div>
           )}
         </div>
         <div className="text-right flex flex-col items-end gap-2">
@@ -537,7 +541,7 @@ export default function Home() {
           ? ` · ${data.statsMatched} with form/H2H stats`
           : "";
       setStatus(
-        `Scan complete — ${data.pickCount} qualified picks from ${data.matchCount} matches${leagues}${stats}. Cached until next calendar day.`
+        `${force ? "Force re-scan" : "Scan"} complete — ${data.pickCount} qualified picks from ${data.matchCount} matches${leagues}${stats}.`
       );
       setTab("picks");
       setPage(1);
@@ -634,11 +638,11 @@ export default function Home() {
             Daily Picks
           </h1>
           <p className="text-muted max-w-2xl text-sm sm:text-[15px] leading-relaxed">
-            Once-daily research scan: form, H2H, injuries/context when available,
-            market consensus, and risk-rated picks. Builds six accumulators
-            (~2x→~1000x) from Step-1 picks only. Missing data is marked
-            unavailable — never invented. Force re-scan only when you explicitly
-            choose it.
+            Research scan: form, H2H, injuries/context when available, market
+            consensus, and risk-rated picks. Builds six accumulators (~2x→~1000x)
+            from Step-1 picks only. Missing data is marked unavailable — never
+            invented. One scan per calendar day (cached); Force re-scan replaces
+            it.
           </p>
 
           <div className="sticky top-0 z-20 -mx-4 sm:mx-0 px-4 sm:px-0 py-3 sm:py-0 sm:static bg-bg/85 sm:bg-transparent backdrop-blur-md sm:backdrop-blur-none border-b border-border/60 sm:border-0">
@@ -658,7 +662,7 @@ export default function Home() {
                 <button
                   onClick={() => runAnalysis(true)}
                   disabled={loading}
-                  className="w-full sm:w-auto px-4 py-3 sm:py-2.5 rounded-lg border border-warn/50 text-sm text-warn hover:bg-warn/10 transition-colors min-h-[44px] disabled:opacity-50"
+                  className="w-full sm:w-auto font-medium px-5 py-3 sm:py-2.5 rounded-lg border border-warn/50 text-warn hover:bg-warn/10 transition-colors disabled:opacity-50 min-h-[44px]"
                 >
                   Force re-scan
                 </button>
@@ -681,12 +685,18 @@ export default function Home() {
             <div className="text-muted text-sm font-mono">{status}</div>
           )}
           <div className="text-xs text-muted font-mono leading-relaxed">
-            One scan per calendar day · auto-settle every 5m
+            {scanLocked
+              ? `Cached for today · unlocks ${
+                  nextUnlockAt
+                    ? new Date(nextUnlockAt).toLocaleString()
+                    : "tomorrow"
+                }`
+              : ranToday
+                ? "Run available"
+                : "No scan yet today"}
+            {" · "}auto-settle every 5m
             {lastSettleAt
               ? ` · last settle ${new Date(lastSettleAt).toLocaleTimeString()}`
-              : ""}
-            {scanLocked && nextUnlockAt
-              ? ` · next free scan ${new Date(nextUnlockAt).toLocaleString()}`
               : ""}
           </div>
         </header>
@@ -742,8 +752,8 @@ export default function Home() {
 
           {tab === "picks" && latest && (
             <p className="text-xs text-muted leading-relaxed">
-              Pending picks from the latest run — they remain until the next
-              analysis (finished ones move to Results with scores).
+              Full match table from today’s cached scan — pick may be null when
+              data is insufficient. Accumulators use qualified Step-1 picks only.
             </p>
           )}
 
@@ -839,17 +849,98 @@ export default function Home() {
             </div>
           )}
 
-          <div className="flex flex-col divide-y divide-border rounded-xl border border-border overflow-hidden bg-surface/40">
+          <div className="rounded-xl border border-border overflow-hidden bg-surface/40">
             {!list || list.items.length === 0 ? (
               <div className="px-4 py-10 text-sm text-muted text-center">
                 {tab === "picks"
                   ? "No pending picks. Run today's analysis to populate."
                   : "No settled results yet. They appear after games finish and settle."}
               </div>
+            ) : tab === "picks" ? (
+              <>
+                {/* Mobile: stacked cards */}
+                <div className="flex flex-col divide-y divide-border md:hidden">
+                  {list.items.map((p) => (
+                    <PickRow key={p.id} pick={p} tab={tab} />
+                  ))}
+                </div>
+                {/* Desktop: full analysis table */}
+                <div className="hidden md:block overflow-x-auto">
+                  <table className="w-full text-sm text-left min-w-[960px]">
+                    <thead className="bg-surfaceRaised/80 text-[11px] uppercase tracking-wide text-muted border-b border-border">
+                      <tr>
+                        <th className="px-3 py-3 font-medium">Match</th>
+                        <th className="px-3 py-3 font-medium">Competition</th>
+                        <th className="px-3 py-3 font-medium">Kickoff</th>
+                        <th className="px-3 py-3 font-medium">Pick</th>
+                        <th className="px-3 py-3 font-medium">Odds</th>
+                        <th className="px-3 py-3 font-medium">Conf</th>
+                        <th className="px-3 py-3 font-medium">Risk</th>
+                        <th className="px-3 py-3 font-medium min-w-[12rem]">
+                          Justification
+                        </th>
+                        <th className="px-3 py-3 font-medium min-w-[10rem]">
+                          What could go wrong
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border">
+                      {list.items.map((p) => {
+                        const a = p.analysis;
+                        const displayPick =
+                          a?.noPickReason ?? a?.pickSelection ?? p.selection;
+                        const displayOdds = a?.pickOdds ?? p.bestPrice;
+                        const conf =
+                          a?.confidence ?? Math.round(p.confidenceScore / 10);
+                        return (
+                          <tr
+                            key={p.id}
+                            className="align-top hover:bg-surface/80 transition-colors"
+                          >
+                            <td className="px-3 py-3 font-medium">
+                              {p.homeTeam}{" "}
+                              <span className="text-muted font-normal">vs</span>{" "}
+                              {p.awayTeam}
+                            </td>
+                            <td className="px-3 py-3 text-muted text-xs">
+                              {p.league || p.sport}
+                            </td>
+                            <td className="px-3 py-3 font-mono text-xs whitespace-nowrap">
+                              {formatKickoff(p.commenceTime)}
+                            </td>
+                            <td className="px-3 py-3 font-mono text-xs max-w-[10rem]">
+                              {displayPick}
+                            </td>
+                            <td className="px-3 py-3 font-mono tabular-nums">
+                              {a?.noPickReason
+                                ? "—"
+                                : displayOdds.toFixed(2)}
+                            </td>
+                            <td className="px-3 py-3 font-mono tabular-nums">
+                              {conf}/10
+                            </td>
+                            <td className="px-3 py-3 text-xs">
+                              {a?.risk ?? "—"}
+                            </td>
+                            <td className="px-3 py-3 text-xs text-muted leading-relaxed">
+                              {a?.justification || "—"}
+                            </td>
+                            <td className="px-3 py-3 text-xs text-muted leading-relaxed">
+                              {a?.whatCouldGoWrong || "—"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </>
             ) : (
-              list.items.map((p) => (
-                <PickRow key={p.id} pick={p} tab={tab} />
-              ))
+              <div className="flex flex-col divide-y divide-border">
+                {list.items.map((p) => (
+                  <PickRow key={p.id} pick={p} tab={tab} />
+                ))}
+              </div>
             )}
           </div>
 

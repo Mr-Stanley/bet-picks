@@ -36,6 +36,7 @@ export type MatchReport = {
   scoredPick: ScoredPick | null;
 };
 
+/** Plan threshold: pick only if confidence ≥ 6/10 with enough core data. */
 const MIN_CONFIDENCE = 6;
 const UNAVAILABLE = "unavailable";
 
@@ -66,7 +67,12 @@ function riskFromConfidence(c: number): RiskLevel {
 
 /**
  * Build one MatchReport per unique event from best-ranked scored picks + stats.
- * Only issues a pick when confidence ≥ 6 and odds consensus exists.
+ *
+ * Pick rules (plan):
+ * - confidence ≥ 6/10
+ * - core data: odds consensus (≥2 books), optionally enriched by form/H2H
+ * - missing form/H2H/injuries/context/weather/referee/line moves → "unavailable"
+ * - never invent data
  */
 export function buildMatchReports(
   bestPerEvent: ScoredPick[],
@@ -77,34 +83,42 @@ export function buildMatchReports(
     const stats = statsByEvent.get(pick.eventId);
     const form = formText(stats, soccer);
     const h2h = h2hText(stats, soccer);
-    const injuries = UNAVAILABLE; // no reliable free source wired yet
-    const context = UNAVAILABLE;
+    const injuries = stats?.injuriesSummary ?? UNAVAILABLE;
+    const context = stats?.contextSummary ?? UNAVAILABLE;
     const weather = UNAVAILABLE;
     const referee = UNAVAILABLE;
     const lineMovement = UNAVAILABLE;
 
     const impliedProb = pick.impliedProb;
-    // Map rankScore 0–100 → assessed probability nudged toward favorite strength
     const assessedProb = Math.min(
       0.92,
       Math.max(0.08, (pick.rankScore / 100) * 0.55 + impliedProb * 0.45)
     );
     const valueFlag = assessedProb > impliedProb + 0.04;
 
-    const hasFormOrH2h =
-      (form !== UNAVAILABLE && !form.startsWith(UNAVAILABLE)) ||
-      (h2h !== UNAVAILABLE &&
-        !h2h.startsWith(UNAVAILABLE) &&
-        h2h !== "no recent H2H meetings in feed");
-    const hasConsensus = pick.numBooks >= 2 && pick.confidenceScore >= 25;
+    const hasConsensus = pick.numBooks >= 2 && pick.bestPrice > 1;
 
-    // Confidence 1–10 from rankScore
+    // Confidence 1–10 from rankScore + favorite strength
     let confidence = Math.round(pick.rankScore / 10);
-    confidence = Math.max(1, Math.min(10, confidence));
-    if (!hasConsensus) confidence = Math.min(confidence, 4);
-    if (soccer && !stats) confidence = Math.min(confidence, 5);
+    if (pick.bestPrice <= 1.55) confidence += 2;
+    else if (pick.bestPrice <= 1.85) confidence += 1;
+    else if (pick.bestPrice >= 3.0) confidence -= 1;
 
-    const enoughData = hasConsensus && (hasFormOrH2h || !soccer || confidence >= 7);
+    if (stats) {
+      // Form/H2H edge boosts confidence when available
+      const formEdge = Math.abs(stats.homeFormPts - stats.awayFormPts);
+      if (formEdge >= 6) confidence += 1;
+      if (stats.h2hPlayed >= 3) confidence += 1;
+    } else if (soccer) {
+      // Soft penalty only — still allow odds-led picks
+      confidence -= 1;
+    }
+
+    confidence = Math.max(1, Math.min(10, confidence));
+    if (!hasConsensus) confidence = Math.min(confidence, 3);
+
+    // Plan: odds + consensus is enough core data; form/H2H optional
+    const enoughData = hasConsensus;
 
     let pickSelection: string | null = null;
     let pickMarket: string | null = null;
@@ -117,8 +131,9 @@ export function buildMatchReports(
 
     if (!enoughData || confidence < MIN_CONFIDENCE) {
       noPickReason = "no pick — insufficient data";
-      justification =
-        "Data too thin for a supported selection (need book consensus and, for soccer, form/H2H when available).";
+      justification = !hasConsensus
+        ? "Fewer than 2 books quoting this market — cannot form a consensus pick."
+        : `Confidence ${confidence}/10 below threshold (${MIN_CONFIDENCE}) after ranking odds${soccer && !stats ? " (soccer stats unmatched/unavailable)" : ""}.`;
       whatCouldGoWrong = "Issuing a pick here would be guessing.";
     } else {
       pickSelection = pick.selection;
@@ -130,11 +145,16 @@ export function buildMatchReports(
         `Consensus ${pick.confidenceScore}/100 across ${pick.numBooks} books @ ${pick.bestPrice.toFixed(2)}.`,
         `Rank ${pick.rankScore}/100; assessed ~${(assessedProb * 100).toFixed(0)}% vs implied ${(impliedProb * 100).toFixed(0)}%.`,
         valueFlag ? "Assessed probability above odds (value flag)." : "No clear value edge vs books.",
-        stats?.hint ? `Stats: ${stats.hint}.` : soccer ? "Soccer stats unmatched." : "Non-soccer: odds-led.",
+        stats?.hint
+          ? `Stats: ${stats.hint}.`
+          : soccer
+            ? "Soccer form/H2H: unavailable (odds-led pick)."
+            : "Non-soccer: odds-led.",
       ].join(" ");
       whatCouldGoWrong = [
         "Late lineup/injury news not in feed.",
         "Variance in a single match outcome.",
+        !stats && soccer ? "No form/H2H verification for this fixture." : null,
         pick.category === "draw" ? "Draws are inherently volatile." : null,
         pick.bestPrice >= 2.5 ? "Longer price — higher upset risk." : null,
       ]
@@ -144,10 +164,8 @@ export function buildMatchReports(
 
     const marketNotes = [
       `Best price ${pick.bestPrice.toFixed(2)} (${pick.book}), ${pick.numBooks} books.`,
-      lineMovement === UNAVAILABLE ? "Line movement: unavailable." : "",
-    ]
-      .filter(Boolean)
-      .join(" ");
+      "Line movement: unavailable.",
+    ].join(" ");
 
     return {
       eventId: pick.eventId,
@@ -168,7 +186,7 @@ export function buildMatchReports(
       impliedProb,
       valueFlag,
       risk,
-      confidence: enoughData && confidence >= MIN_CONFIDENCE ? confidence : confidence,
+      confidence,
       justification,
       whatCouldGoWrong,
       pickSelection,

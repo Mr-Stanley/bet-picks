@@ -53,7 +53,6 @@ alter table matches add column if not exists profit numeric;
 alter table matches add column if not exists home_score numeric;
 alter table matches add column if not exists away_score numeric;
 
-create index if not exists idx_matches_run_id on matches(run_id);
-create index if not exists idx_combinations_run_id on combinations(run_id);
-create index if not exists idx_matches_event_id on matches(event_id);
-create index if not exists idx_matches_result_commence on matches(result, commence_time desc);
+-- Analysis reports are stored in matches.raw->analysis (JSON).
+-- Optional denormalized column for querying:
+alter table matches add column if not exists analysis jsonb;

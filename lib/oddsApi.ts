@@ -203,16 +203,32 @@ export async function fetchOddsForSport(
   apiKey: string,
   sportKey: string,
   group: string
-): Promise<NormalizedMatch[]> {
+): Promise<{ matches: NormalizedMatch[]; status: number; quotaExhausted: boolean }> {
   const regions = regionsForGroup(group);
   const url = `${BASE_URL}/sports/${sportKey}/odds?apiKey=${apiKey}&regions=${regions}&markets=${FEATURED_MARKETS}&oddsFormat=decimal`;
   const res = await fetch(url);
   if (!res.ok) {
+    let quotaExhausted = res.status === 401 || res.status === 429;
+    try {
+      const body = await res.json();
+      if (
+        body?.error_code === "OUT_OF_USAGE_CREDITS" ||
+        String(body?.message ?? "").toLowerCase().includes("quota")
+      ) {
+        quotaExhausted = true;
+      }
+    } catch {
+      /* ignore body parse */
+    }
     console.warn(`Odds API failed for ${sportKey}: ${res.status}`);
-    return [];
+    return { matches: [], status: res.status, quotaExhausted };
   }
   const events = await res.json();
-  return (events as any[]).map(toNormalizedMatch);
+  return {
+    matches: (events as any[]).map(toNormalizedMatch),
+    status: res.status,
+    quotaExhausted: false,
+  };
 }
 
 async function fetchEventExtraMarkets(
@@ -259,21 +275,72 @@ async function mapInBatches<T, R>(
   return results;
 }
 
-/** Fetches odds across all active football/basketball/tennis leagues (next 24h). */
+/** Prefer major / high-liquidity leagues first so free-tier quota lasts longer. */
+const PRIORITY_SPORT_KEYS = [
+  "soccer_epl",
+  "soccer_spain_la_liga",
+  "soccer_italy_serie_a",
+  "soccer_germany_bundesliga",
+  "soccer_france_ligue_one",
+  "soccer_uefa_champs_league",
+  "soccer_uefa_europa_league",
+  "soccer_usa_mls",
+  "soccer_efl_champ",
+  "basketball_nba",
+  "basketball_euroleague",
+  "tennis_atp_aus_open_singles",
+  "tennis_wta_aus_open_singles",
+];
+
+function maxSportsPerRun(): number {
+  const n = Number(process.env.ODDS_MAX_SPORTS_PER_RUN ?? "12");
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 12;
+}
+
+function prioritizeSports(sports: SportEntry[]): SportEntry[] {
+  const limit = maxSportsPerRun();
+  const ranked = [...sports].sort((a, b) => {
+    const ai = PRIORITY_SPORT_KEYS.indexOf(a.key);
+    const bi = PRIORITY_SPORT_KEYS.indexOf(b.key);
+    const ap = ai === -1 ? 999 : ai;
+    const bp = bi === -1 ? 999 : bi;
+    return ap - bp;
+  });
+  return ranked.slice(0, limit);
+}
+
+/** Fetches odds across football/basketball/tennis for matches starting in the next 24h. */
 export async function fetchTodaysOdds(apiKey: string): Promise<NormalizedMatch[]> {
-  const sports = await fetchActiveSports(apiKey);
+  const sports = prioritizeSports(await fetchActiveSports(apiKey));
 
   const results = await mapInBatches(sports, ODDS_FETCH_CONCURRENCY, (s) =>
     fetchOddsForSport(apiKey, s.key, s.group)
   );
 
+  const quotaHits = results.filter((r) => r.quotaExhausted).length;
+  const okCount = results.filter((r) => r.status >= 200 && r.status < 300).length;
+
+  if (okCount === 0 && quotaHits > 0) {
+    throw new Error(
+      "The Odds API usage quota is exhausted (OUT_OF_USAGE_CREDITS). No odds could be fetched, so no picks can be generated. Get a new key or upgrade at https://the-odds-api.com, or wait until your monthly credits reset."
+    );
+  }
+
+  if (okCount === 0) {
+    throw new Error(
+      "Odds API returned no league data (all requests failed). Check ODDS_API_KEY and network."
+    );
+  }
+
   const now = Date.now();
   const cutoff = now + 24 * 60 * 60 * 1000;
 
-  const matches = results.flat().filter((m) => {
-    const t = new Date(m.commenceTime).getTime();
-    return t >= now && t <= cutoff;
-  });
+  const matches = results
+    .flatMap((r) => r.matches)
+    .filter((m) => {
+      const t = new Date(m.commenceTime).getTime();
+      return t >= now && t <= cutoff;
+    });
 
   const extrasBudget = new Map<string, number>(
     TARGET_GROUPS.map((g) => [g, MAX_EXTRA_EVENTS_PER_GROUP])

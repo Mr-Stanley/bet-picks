@@ -22,6 +22,10 @@ export type MatchStats = {
   expectedGoalsTotal: number;
   homeCornersAvg: number | null;
   awayCornersAvg: number | null;
+  /** Short injury/suspension summary or null if fetch failed. */
+  injuriesSummary: string | null;
+  /** Rest/congestion note from last fixture dates. */
+  contextSummary: string | null;
   hint: string;
 };
 
@@ -182,6 +186,53 @@ function buildHint(stats: Omit<MatchStats, "hint">): string {
   return `${form} · ${h2h} · ${goals}`;
 }
 
+function daysSince(iso: string | undefined, kickoffIso: string): number | null {
+  if (!iso) return null;
+  const a = new Date(iso).getTime();
+  const b = new Date(kickoffIso).getTime();
+  if (Number.isNaN(a) || Number.isNaN(b)) return null;
+  return Math.max(0, Math.round((b - a) / (24 * 60 * 60 * 1000)));
+}
+
+function restContext(
+  homeLast: AfFixture[],
+  awayLast: AfFixture[],
+  kickoffIso: string
+): string | null {
+  const homePrev = homeLast.find((f) => f.goals.home !== null)?.fixture.date;
+  const awayPrev = awayLast.find((f) => f.goals.home !== null)?.fixture.date;
+  const hd = daysSince(homePrev, kickoffIso);
+  const ad = daysSince(awayPrev, kickoffIso);
+  if (hd === null && ad === null) return null;
+  const parts: string[] = [];
+  if (hd !== null) {
+    parts.push(
+      hd <= 3 ? `home short rest (~${hd}d)` : `home rest ~${hd}d`
+    );
+  }
+  if (ad !== null) {
+    parts.push(
+      ad <= 3 ? `away short rest (~${ad}d)` : `away rest ~${ad}d`
+    );
+  }
+  return parts.join("; ");
+}
+
+async function injuriesForTeam(
+  key: string,
+  teamId: number,
+  season: number
+): Promise<string[]> {
+  const data = await afFetch<
+    { player: { name: string }; type?: string; reason?: string }[]
+  >(`/injuries?team=${teamId}&season=${season}`, key);
+  if (!data || data.length === 0) return [];
+  return data.slice(0, 5).map((row) => {
+    const why = row.reason || row.type || "out";
+    return `${row.player?.name ?? "player"} (${why})`;
+  });
+}
+
 /**
  * Enrich soccer matches with form / H2H / goals / corners.
  * Returns a map keyed by Odds API eventId. Empty if no API key.
@@ -274,6 +325,25 @@ export async function fetchMatchStatsMap(
       cornersAvgForTeam(key, awayLast, pair.awayId, cornerBudget),
     ]);
 
+    const season = new Date(pair.match.commenceTime).getUTCFullYear();
+    const [homeInj, awayInj] = await Promise.all([
+      injuriesForTeam(key, pair.homeId, season),
+      injuriesForTeam(key, pair.awayId, season),
+    ]);
+    let injuriesSummary: string | null = null;
+    if (homeInj.length || awayInj.length) {
+      const bits: string[] = [];
+      if (homeInj.length) bits.push(`Home: ${homeInj.join(", ")}`);
+      if (awayInj.length) bits.push(`Away: ${awayInj.join(", ")}`);
+      injuriesSummary = bits.join(" · ");
+    }
+
+    const contextSummary = restContext(
+      homeLast,
+      awayLast,
+      pair.match.commenceTime
+    );
+
     const base = {
       homeFormPts: homeForm.pts,
       awayFormPts: awayForm.pts,
@@ -288,6 +358,8 @@ export async function fetchMatchStatsMap(
       expectedGoalsTotal,
       homeCornersAvg,
       awayCornersAvg,
+      injuriesSummary,
+      contextSummary,
     };
 
     return {

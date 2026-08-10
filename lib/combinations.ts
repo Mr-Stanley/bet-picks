@@ -83,6 +83,7 @@ export type Combination = {
   riskProfile: string;
   slipNote: string;
   targetReached: boolean;
+  underfillNote: string | null;
   disclaimer: string | null;
 };
 
@@ -156,17 +157,22 @@ function buildTier(
     }
   }
 
-  const targetReached = combined >= meta.targetOdds * 0.98;
+  const rounded = Math.round(combined * 100) / 100;
+  const targetReached = rounded >= meta.targetOdds * 0.98;
+  const underfillNote = targetReached
+    ? null
+    : `Closest achievable: ${rounded.toFixed(1)}x (target ${meta.targetOdds}x) — soft-filled from available Step-1 picks.`;
 
   return {
     tier: meta.tier,
     targetOdds: meta.targetOdds,
-    combinedOdds: Math.round(combined * 100) / 100,
+    combinedOdds: rounded,
     impliedProbability: 1 / combined,
     legs,
     riskProfile: meta.riskProfile,
     slipNote: meta.slipNote,
     targetReached,
+    underfillNote,
     disclaimer: meta.requiresDisclaimer ? HIGH_TIER_DISCLAIMER : null,
   };
 }

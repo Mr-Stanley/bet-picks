@@ -47,30 +47,30 @@ export async function POST(req: Request) {
     }
 
     const force = await parseForce(req);
-
     const supabase = getSupabaseServer();
     const dayStart = currentCalendarDayStart();
-    const nextDay = nextCalendarDayStart();
+    const nextUnlock = nextCalendarDayStart();
 
-    const { data: todaysRun, error: todaysError } = await supabase
+    const { data: todayRun, error: todayErr } = await supabase
       .from("runs")
-      .select("id, created_at")
+      .select("id, created_at, match_count")
       .gte("created_at", dayStart.toISOString())
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();
-    if (todaysError) throw todaysError;
+    if (todayErr) throw todayErr;
 
-    if (todaysRun && !force) {
+    if (todayRun && !force) {
       return NextResponse.json(
         {
           error:
-            "Scan already cached for today. Refuse to re-run until the next calendar day unless you explicitly force a re-scan.",
-          runId: todaysRun.id,
-          ranAt: todaysRun.created_at,
+            "Analysis already cached for today. Use Force re-scan to replace it.",
           scanLocked: true,
+          ranToday: true,
           canRunToday: false,
-          nextUnlockAt: nextDay.toISOString(),
+          runId: todayRun.id,
+          matchCount: todayRun.match_count,
+          nextUnlockAt: nextUnlock.toISOString(),
           windowLabel: analysisWindowLabel(),
         },
         { status: 429 }
@@ -86,15 +86,10 @@ export async function POST(req: Request) {
     const combinations = buildCombinations(qualified);
 
     const toInsert: ScoredPick[] = [...qualified];
-    // Also persist no-pick events as placeholder rows? Plan says table of all matches.
-    // Store all bestPerEvent with analysis; only qualified have real picks for combos.
-    // For no-pick rows use a sentinel selection so UI can show the report.
     const insertedKeys = new Set(qualified.map(pickInsertKey));
     for (const report of reports) {
       if (report.scoredPick) continue;
-      const stub: ScoredPick = bestPerEvent.find(
-        (p) => p.eventId === report.eventId
-      )!;
+      const stub = bestPerEvent.find((p) => p.eventId === report.eventId);
       if (!stub) continue;
       const key = pickInsertKey(stub);
       if (insertedKeys.has(key)) continue;
@@ -108,8 +103,6 @@ export async function POST(req: Request) {
       .eq("result", "pending");
     if (clearPendingError) throw clearPendingError;
 
-    // On force re-scan, also drop today's prior combinations via cascade when we
-    // don't delete runs — pending matches cleared; old run rows remain history.
     const { data: run, error: runError } = await supabase
       .from("runs")
       .insert({
@@ -137,7 +130,7 @@ export async function POST(req: Request) {
             home_team: p.homeTeam,
             away_team: p.awayTeam,
             commence_time: p.commenceTime,
-            market: isQualified ? p.market : p.market,
+            market: p.market,
             pick_selection: isQualified
               ? p.selection
               : report?.noPickReason ?? "no pick — insufficient data",
@@ -146,7 +139,8 @@ export async function POST(req: Request) {
             num_books: p.numBooks,
             price_spread: p.priceSpread,
             implied_prob: p.impliedProb,
-            confidence_score: report?.confidence ?? p.rankScore ?? p.confidenceScore,
+            confidence_score:
+              report?.confidence ?? p.rankScore ?? p.confidenceScore,
             confidence_band: p.confidenceBand,
             result: "pending",
             raw: {
@@ -231,8 +225,11 @@ export async function POST(req: Request) {
       reports,
       combinations,
       scanLocked: true,
+      ranToday: true,
       canRunToday: false,
-      nextUnlockAt: nextDay.toISOString(),
+      nextUnlockAt: nextUnlock.toISOString(),
+      windowLabel: analysisWindowLabel(),
+      forced: force,
     });
   } catch (err: any) {
     console.error(err);
